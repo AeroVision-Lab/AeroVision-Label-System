@@ -6,6 +6,9 @@
         <button @click="exportCsv" class="export-btn">
           导出 CSV
         </button>
+        <button @click="exportYolo" class="export-btn yolo">
+          导出 YOLO
+        </button>
         <button @click="loadLabels" class="refresh-btn">
           刷新
         </button>
@@ -182,6 +185,7 @@ import {
   updateLabel,
   deleteLabel,
   exportLabels,
+  exportYoloLabels,
   getLabeledImageUrl,
   getAirlines,
   getAircraftTypes
@@ -252,6 +256,11 @@ const goToPage = (page) => {
 // 导出 CSV
 const exportCsv = () => {
   exportLabels()
+}
+
+// 导出 YOLO 格式
+const exportYolo = () => {
+  exportYoloLabels()
 }
 
 // 查看标注
@@ -410,6 +419,15 @@ onMounted(() => {
 
 .export-btn:hover {
   background: #3d6a3d;
+}
+
+.export-btn.yolo {
+  background: #4a5a8a;
+  border-color: #5a6a9a;
+}
+
+.export-btn.yolo:hover {
+  background: #5a6a9a;
 }
 
 .loading,

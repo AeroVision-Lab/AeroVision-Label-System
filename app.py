@@ -4,7 +4,8 @@ Flask 后端 API
 import os
 import csv
 import shutil
-from io import StringIO
+import zipfile
+from io import StringIO, BytesIO
 from flask import Flask, jsonify, request, send_file, Response
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -203,8 +204,10 @@ def export_labels():
     """导出标注数据为 CSV"""
     labels = db.get_all_labels_for_export()
 
-    # 创建 CSV
+    # 创建 CSV（使用 UTF-8 BOM 以支持 Excel 中文显示）
     output = StringIO()
+    # 写入 UTF-8 BOM
+    output.write('\ufeff')
     writer = csv.writer(output)
 
     # 写入表头
@@ -227,9 +230,41 @@ def export_labels():
     output.seek(0)
 
     return Response(
-        output.getvalue(),
-        mimetype='text/csv',
+        output.getvalue().encode('utf-8-sig'),
+        mimetype='text/csv; charset=utf-8-sig',
         headers={'Content-Disposition': 'attachment; filename=labels.csv'}
+    )
+
+
+@app.route('/api/labels/export-yolo', methods=['GET'])
+def export_yolo_labels():
+    """导出 YOLO 格式标注文件（zip 包含所有 txt 文件）"""
+    labels = db.get_all_labels_with_area()
+
+    # 创建内存中的 zip 文件
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for label in labels:
+            # 生成 txt 文件名（与图片同名）
+            img_name = os.path.splitext(label['file_name'])[0]
+            txt_filename = f"{img_name}.txt"
+
+            # YOLO 格式: class_id x_center y_center width height
+            # registration_area 已经是 "x_center y_center width height" 格式
+            if label['registration_area']:
+                content = f"0 {label['registration_area']}"
+            else:
+                content = ""
+
+            zip_file.writestr(txt_filename, content)
+
+    zip_buffer.seek(0)
+
+    return send_file(
+        zip_buffer,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name='yolo_labels.zip'
     )
 
 

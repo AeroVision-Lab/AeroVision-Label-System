@@ -30,6 +30,7 @@ export const createLabel = (data) => api.post('/labels', data)
 export const updateLabel = (id, data) => api.put(`/labels/${id}`, data)
 export const deleteLabel = (id) => api.delete(`/labels/${id}`)
 export const exportLabels = () => window.open('/api/labels/export', '_blank')
+export const exportYoloLabels = () => window.open('/api/labels/export-yolo', '_blank')
 
 // 航司相关
 export const getAirlines = () => api.get('/airlines')

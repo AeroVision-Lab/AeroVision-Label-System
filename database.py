@@ -237,6 +237,19 @@ class Database:
         conn.close()
         return [dict(row) for row in rows]
 
+    def get_all_labels_with_area(self) -> list:
+        """获取所有标注数据（包含区域信息）用于 YOLO 导出"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT file_name, registration_area
+            FROM labels
+            ORDER BY file_name
+        ''')
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     def get_labeled_original_filenames(self) -> set:
         """获取所有已标注的原始文件名集合"""
         conn = self.get_connection()
