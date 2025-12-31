@@ -4,7 +4,11 @@
 import sqlite3
 import os
 import json
+import time
 from typing import Optional
+
+# 锁超时时间（秒）- 10分钟后自动释放
+LOCK_TIMEOUT = 600
 
 
 class Database:
@@ -57,6 +61,16 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 code TEXT NOT NULL UNIQUE,
                 name TEXT NOT NULL
+            )
+        ''')
+
+        # 创建图片锁表（用于多人协作时防止冲突）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS image_locks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                locked_at REAL NOT NULL
             )
         ''')
 
@@ -318,3 +332,104 @@ class Database:
             'by_type': by_type,
             'by_airline': by_airline
         }
+
+    # ==================== 图片锁操作 ====================
+
+    def cleanup_expired_locks(self):
+        """清理过期的锁"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        expire_time = time.time() - LOCK_TIMEOUT
+        cursor.execute('DELETE FROM image_locks WHERE locked_at < ?', (expire_time,))
+        conn.commit()
+        conn.close()
+
+    def acquire_lock(self, filename: str, user_id: str) -> bool:
+        """
+        尝试获取图片锁
+        返回 True 表示成功获取锁，False 表示图片已被他人锁定
+        """
+        self.cleanup_expired_locks()
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # 检查是否已被锁定
+        cursor.execute('SELECT user_id, locked_at FROM image_locks WHERE filename = ?', (filename,))
+        row = cursor.fetchone()
+        
+        if row:
+            # 已被锁定，检查是否是同一用户
+            if row['user_id'] == user_id:
+                # 同一用户，更新锁定时间
+                cursor.execute(
+                    'UPDATE image_locks SET locked_at = ? WHERE filename = ?',
+                    (time.time(), filename)
+                )
+                conn.commit()
+                conn.close()
+                return True
+            else:
+                # 其他用户锁定
+                conn.close()
+                return False
+        
+        # 未被锁定，创建新锁
+        try:
+            cursor.execute(
+                'INSERT INTO image_locks (filename, user_id, locked_at) VALUES (?, ?, ?)',
+                (filename, user_id, time.time())
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except sqlite3.IntegrityError:
+            # 并发情况下可能插入失败
+            conn.close()
+            return False
+
+    def release_lock(self, filename: str, user_id: str) -> bool:
+        """释放图片锁（只能释放自己的锁）"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'DELETE FROM image_locks WHERE filename = ? AND user_id = ?',
+            (filename, user_id)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def release_all_user_locks(self, user_id: str) -> int:
+        """释放某用户的所有锁（用于用户断开连接时）"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM image_locks WHERE user_id = ?', (user_id,))
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected
+
+    def get_locked_filenames(self) -> set:
+        """获取所有被锁定的文件名（排除过期的）"""
+        self.cleanup_expired_locks()
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT filename FROM image_locks')
+        rows = cursor.fetchall()
+        conn.close()
+        return {row['filename'] for row in rows}
+
+    def get_lock_info(self, filename: str) -> Optional[dict]:
+        """获取指定文件的锁信息"""
+        self.cleanup_expired_locks()
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM image_locks WHERE filename = ?', (filename,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+

@@ -15,8 +15,14 @@
       <div class="image-section">
         <div class="image-info">
           <span class="filename">{{ currentImage.filename }}</span>
+          <span v-if="lockStatus === 'locked'" class="lock-status locked">
+            已锁定
+          </span>
+          <span v-else-if="lockStatus === 'failed'" class="lock-status failed">
+            锁定失败
+          </span>
           <span class="progress">
-            {{ currentIndex + 1 }} / {{ images.length }}
+            {{ currentIndex + 1 }} / {{ availableImages.length }}
           </span>
         </div>
 
@@ -50,10 +56,19 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import BoundingBox from './BoundingBox.vue'
 import LabelForm from './LabelForm.vue'
-import { getImages, getImageUrl, createLabel } from '../api'
+import {
+  getImages,
+  getImageUrl,
+  createLabel,
+  acquireLock,
+  releaseLock,
+  releaseAllLocks,
+  sendHeartbeat,
+  userId
+} from '../api'
 
 const emit = defineEmits(['labeled'])
 
@@ -64,12 +79,22 @@ const boundingBoxRef = ref(null)
 const labelFormRef = ref(null)
 const message = ref(null)
 
+// 锁相关
+const lockStatus = ref('') // 'locked' | 'failed' | ''
+const currentLockedFile = ref(null)
+let heartbeatTimer = null
+
 // 图片尺寸（实际尺寸，用于计算 YOLO 格式）
 const imageWidth = ref(1920)
 const imageHeight = ref(1080)
 
+// 过滤掉被他人锁定的图片
+const availableImages = computed(() =>
+  images.value.filter(img => !img.locked)
+)
+
 // 当前图片
-const currentImage = computed(() => images.value[currentIndex.value] || null)
+const currentImage = computed(() => availableImages.value[currentIndex.value] || null)
 
 // 区域数据
 const airplaneBox = ref(null)
@@ -103,15 +128,41 @@ const loadImages = async () => {
     images.value = res.data.items
     currentIndex.value = 0
 
-    // 加载第一张图片的尺寸
-    if (images.value.length > 0) {
-      await loadImageSize(images.value[0].filename)
+    // 加载第一张图片并锁定
+    if (availableImages.value.length > 0) {
+      await loadAndLockImage(availableImages.value[0].filename)
     }
   } catch (e) {
     console.error('加载图片列表失败:', e)
     showMessage('加载图片列表失败', 'error')
   } finally {
     loading.value = false
+  }
+}
+
+// 加载图片并锁定
+const loadAndLockImage = async (filename) => {
+  // 先释放之前的锁
+  if (currentLockedFile.value && currentLockedFile.value !== filename) {
+    await releaseLock(currentLockedFile.value).catch(() => {})
+  }
+
+  // 加载图片尺寸
+  await loadImageSize(filename)
+
+  // 尝试锁定
+  try {
+    await acquireLock(filename)
+    lockStatus.value = 'locked'
+    currentLockedFile.value = filename
+    startHeartbeat(filename)
+  } catch (e) {
+    if (e.response?.status === 409) {
+      lockStatus.value = 'failed'
+      showMessage(`图片已被 ${e.response.data.locked_by} 锁定`, 'error')
+      // 跳到下一张
+      setTimeout(() => handleSkip(), 1500)
+    }
   }
 }
 
@@ -132,6 +183,29 @@ const loadImageSize = (filename) => {
   })
 }
 
+// 心跳保持锁
+const startHeartbeat = (filename) => {
+  stopHeartbeat()
+  heartbeatTimer = setInterval(async () => {
+    if (currentLockedFile.value === filename) {
+      try {
+        await sendHeartbeat(filename)
+      } catch (e) {
+        console.error('心跳失败:', e)
+        lockStatus.value = 'failed'
+        stopHeartbeat()
+      }
+    }
+  }, 60000) // 每分钟发送一次心跳
+}
+
+const stopHeartbeat = () => {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+}
+
 // 矩形框更新
 const onAirplaneBoxUpdate = (box) => {
   airplaneBox.value = box
@@ -145,35 +219,44 @@ const onRegistrationBoxUpdate = (box) => {
 const handleSubmit = async (formData) => {
   if (!currentImage.value) return
 
+  const filename = currentImage.value.filename
+
   try {
     const data = {
-      original_file_name: currentImage.value.filename,
+      original_file_name: filename,
       ...formData
     }
 
     await createLabel(data)
+
+    // 释放锁
+    await releaseLock(filename).catch(() => {})
+    currentLockedFile.value = null
+    stopHeartbeat()
+
     showMessage('标注保存成功', 'success')
     emit('labeled')
 
-    // 移除当前图片并重置
-    images.value.splice(currentIndex.value, 1)
+    // 从列表中移除已标注的图片
+    const idx = images.value.findIndex(img => img.filename === filename)
+    if (idx !== -1) {
+      images.value.splice(idx, 1)
+    }
 
-    if (images.value.length === 0) {
+    if (availableImages.value.length === 0) {
       // 没有更多图片了
       return
     }
 
     // 如果当前索引超出范围，回到第一张
-    if (currentIndex.value >= images.value.length) {
+    if (currentIndex.value >= availableImages.value.length) {
       currentIndex.value = 0
     }
 
-    // 重置状态
+    // 重置状态并加载下一张
     resetState()
-
-    // 加载新图片尺寸
     if (currentImage.value) {
-      await loadImageSize(currentImage.value.filename)
+      await loadAndLockImage(currentImage.value.filename)
     }
   } catch (e) {
     console.error('保存标注失败:', e)
@@ -183,16 +266,25 @@ const handleSubmit = async (formData) => {
 
 // 跳过当前图片
 const handleSkip = async () => {
-  if (images.value.length <= 1) {
+  if (availableImages.value.length <= 1) {
     showMessage('没有更多图片了', 'info')
     return
   }
 
-  currentIndex.value = (currentIndex.value + 1) % images.value.length
+  const filename = currentImage.value?.filename
+
+  // 释放当前锁
+  if (filename && currentLockedFile.value === filename) {
+    await releaseLock(filename).catch(() => {})
+    currentLockedFile.value = null
+    stopHeartbeat()
+  }
+
+  currentIndex.value = (currentIndex.value + 1) % availableImages.value.length
   resetState()
 
   if (currentImage.value) {
-    await loadImageSize(currentImage.value.filename)
+    await loadAndLockImage(currentImage.value.filename)
   }
 }
 
@@ -200,6 +292,7 @@ const handleSkip = async () => {
 const resetState = () => {
   airplaneBox.value = null
   registrationBox.value = null
+  lockStatus.value = ''
   labelFormRef.value?.resetForm()
 }
 
@@ -211,8 +304,30 @@ const showMessage = (text, type = 'info') => {
   }, 3000)
 }
 
+// 页面卸载时释放所有锁
+const handleBeforeUnload = () => {
+  // 使用 sendBeacon 确保请求在页面关闭时发送
+  const data = JSON.stringify({ user_id: userId })
+  navigator.sendBeacon('/api/locks/release-all', new Blob([data], { type: 'application/json' }))
+}
+
 onMounted(() => {
   loadImages()
+  window.addEventListener('beforeunload', handleBeforeUnload)
+})
+
+onUnmounted(() => {
+  stopHeartbeat()
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  // 释放所有锁
+  releaseAllLocks().catch(() => {})
+})
+
+// 监听图片变化
+watch(currentImage, async (newImg, oldImg) => {
+  if (newImg && newImg.filename !== oldImg?.filename) {
+    // 图片变化时会自动在 loadAndLockImage 中处理
+  }
 })
 </script>
 
@@ -271,6 +386,22 @@ onMounted(() => {
 .filename {
   font-family: monospace;
   color: #4a90d9;
+}
+
+.lock-status {
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.lock-status.locked {
+  background: #2d5a2d;
+  color: #8fdf8f;
+}
+
+.lock-status.failed {
+  background: #5a2d2d;
+  color: #df8f8f;
 }
 
 .progress {

@@ -45,16 +45,24 @@ def is_image_file(filename: str) -> bool:
 
 @app.route('/api/images', methods=['GET'])
 def get_images():
-    """获取待标注图片列表（排除已标注的）"""
+    """获取待标注图片列表（排除已标注的和被他人锁定的）"""
+    user_id = request.args.get('user_id', '')
     labeled_files = db.get_labeled_original_filenames()
+    locked_files = db.get_locked_filenames()
 
     images = []
     if os.path.exists(IMAGES_DIR):
         for filename in os.listdir(IMAGES_DIR):
             if is_image_file(filename) and filename not in labeled_files:
+                # 检查是否被锁定（排除自己锁定的）
+                lock_info = db.get_lock_info(filename)
+                is_locked_by_others = lock_info and lock_info['user_id'] != user_id
+
                 images.append({
                     'filename': filename,
-                    'path': f'/api/images/{filename}'
+                    'path': f'/api/images/{filename}',
+                    'locked': is_locked_by_others,
+                    'locked_by': lock_info['user_id'] if is_locked_by_others else None
                 })
 
     # 按文件名排序
@@ -291,6 +299,87 @@ def get_stats():
     stats['unlabeled'] = unlabeled_count
 
     return jsonify(stats)
+
+
+# ==================== 图片锁相关 API ====================
+
+@app.route('/api/locks/acquire', methods=['POST'])
+def acquire_lock():
+    """获取图片锁"""
+    data = request.get_json()
+    filename = data.get('filename')
+    user_id = data.get('user_id')
+
+    if not filename or not user_id:
+        return jsonify({'error': '缺少 filename 或 user_id'}), 400
+
+    success = db.acquire_lock(filename, user_id)
+    if success:
+        return jsonify({'message': '锁定成功', 'filename': filename})
+    else:
+        lock_info = db.get_lock_info(filename)
+        return jsonify({
+            'error': '图片已被他人锁定',
+            'locked_by': lock_info['user_id'] if lock_info else None
+        }), 409
+
+
+@app.route('/api/locks/release', methods=['POST'])
+def release_lock():
+    """释放图片锁"""
+    data = request.get_json()
+    filename = data.get('filename')
+    user_id = data.get('user_id')
+
+    if not filename or not user_id:
+        return jsonify({'error': '缺少 filename 或 user_id'}), 400
+
+    success = db.release_lock(filename, user_id)
+    return jsonify({'message': '释放成功' if success else '无需释放', 'filename': filename})
+
+
+@app.route('/api/locks/release-all', methods=['POST'])
+def release_all_locks():
+    """释放用户的所有锁（用于用户离开页面时）"""
+    data = request.get_json()
+    user_id = data.get('user_id')
+
+    if not user_id:
+        return jsonify({'error': '缺少 user_id'}), 400
+
+    count = db.release_all_user_locks(user_id)
+    return jsonify({'message': f'已释放 {count} 个锁', 'count': count})
+
+
+@app.route('/api/locks/heartbeat', methods=['POST'])
+def heartbeat():
+    """心跳请求，刷新锁的过期时间"""
+    data = request.get_json()
+    filename = data.get('filename')
+    user_id = data.get('user_id')
+
+    if not filename or not user_id:
+        return jsonify({'error': '缺少 filename 或 user_id'}), 400
+
+    # acquire_lock 会自动更新锁定时间
+    success = db.acquire_lock(filename, user_id)
+    if success:
+        return jsonify({'message': '心跳成功'})
+    else:
+        return jsonify({'error': '锁已被他人占用'}), 409
+
+
+@app.route('/api/locks/status/<filename>', methods=['GET'])
+def get_lock_status(filename: str):
+    """获取图片锁状态"""
+    lock_info = db.get_lock_info(filename)
+    if lock_info:
+        return jsonify({
+            'locked': True,
+            'user_id': lock_info['user_id'],
+            'locked_at': lock_info['locked_at']
+        })
+    return jsonify({'locked': False})
 
 
 if __name__ == '__main__':
