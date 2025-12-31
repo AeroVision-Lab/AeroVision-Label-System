@@ -31,7 +31,6 @@
           :image-src="getImageUrl(currentImage.filename)"
           :image-width="imageWidth"
           :image-height="imageHeight"
-          @update:airplane-box="onAirplaneBoxUpdate"
           @update:registration-box="onRegistrationBoxUpdate"
         />
       </div>
@@ -40,7 +39,6 @@
       <div class="form-section">
         <LabelForm
           ref="labelFormRef"
-          :airplane-area="airplaneArea"
           :registration-area="registrationArea"
           @submit="handleSubmit"
           @skip="handleSkip"
@@ -97,15 +95,9 @@ const availableImages = computed(() =>
 const currentImage = computed(() => availableImages.value[currentIndex.value] || null)
 
 // 区域数据
-const airplaneBox = ref(null)
 const registrationBox = ref(null)
 
 // 计算 YOLO 格式的区域字符串
-const airplaneArea = computed(() => {
-  if (!airplaneBox.value) return ''
-  return calculateArea(airplaneBox.value)
-})
-
 const registrationArea = computed(() => {
   if (!registrationBox.value) return ''
   return calculateArea(registrationBox.value)
@@ -207,10 +199,6 @@ const stopHeartbeat = () => {
 }
 
 // 矩形框更新
-const onAirplaneBoxUpdate = (box) => {
-  airplaneBox.value = box
-}
-
 const onRegistrationBoxUpdate = (box) => {
   registrationBox.value = box
 }
@@ -290,7 +278,6 @@ const handleSkip = async () => {
 
 // 重置状态
 const resetState = () => {
-  airplaneBox.value = null
   registrationBox.value = null
   lockStatus.value = ''
   labelFormRef.value?.resetForm()

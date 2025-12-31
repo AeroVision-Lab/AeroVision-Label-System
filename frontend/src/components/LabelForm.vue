@@ -88,9 +88,6 @@
     <div class="form-group area-info">
       <label>区域信息</label>
       <div class="area-display">
-        <div :class="{ valid: !!airplaneArea }">
-          机身: {{ airplaneArea || '未绘制' }}
-        </div>
         <div :class="{ valid: !!registrationArea }">
           注册号: {{ registrationArea || '未绘制' }}
         </div>
@@ -117,7 +114,6 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { getAirlines, getAircraftTypes, createAirline, createAircraftType } from '../api'
 
 const props = defineProps({
-  airplaneArea: String,
   registrationArea: String,
   initialData: Object
 })
@@ -153,7 +149,6 @@ const isValid = computed(() => {
     form.value.airlineId &&
     form.value.typeId &&
     form.value.registration &&
-    props.airplaneArea &&
     props.registrationArea
   )
 })
@@ -256,7 +251,6 @@ const handleSubmit = async () => {
       registration: form.value.registration,
       clarity: form.value.clarity,
       block: form.value.block,
-      airplane_area: props.airplaneArea,
       registration_area: props.registrationArea
     }
     emit('submit', data)

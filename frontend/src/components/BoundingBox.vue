@@ -17,19 +17,12 @@
       </div>
     </div>
     <div class="box-legend">
-      <span class="legend-item airplane">
-        <span class="legend-color"></span>
-        机身区域 ({{ airplaneBox ? '已绘制' : '未绘制' }})
-      </span>
       <span class="legend-item registration">
         <span class="legend-color"></span>
         注册号区域 ({{ registrationBox ? '已绘制' : '未绘制' }})
       </span>
     </div>
     <div class="box-controls">
-      <button @click="setMode('airplane')" :class="{ active: currentMode === 'airplane' }">
-        绘制机身
-      </button>
       <button @click="setMode('registration')" :class="{ active: currentMode === 'registration' }">
         绘制注册号
       </button>
@@ -39,7 +32,7 @@
       <button @click="resetView" class="reset-btn">
         重置视图
       </button>
-      <button @click="clearBoxes" class="clear-btn">清除全部</button>
+      <button @click="clearBoxes" class="clear-btn">清除</button>
     </div>
     <div class="zoom-hint">
       滚轮缩放 | 中键/右键拖动平移 | 双击重置
@@ -54,25 +47,23 @@ const props = defineProps({
   imageSrc: String,
   imageWidth: Number,
   imageHeight: Number,
-  initialAirplaneBox: Object,
   initialRegistrationBox: Object
 })
 
-const emit = defineEmits(['update:airplaneBox', 'update:registrationBox'])
+const emit = defineEmits(['update:registrationBox'])
 
 const containerRef = ref(null)
 const canvasRef = ref(null)
 const canvasWidth = ref(800)
 const canvasHeight = ref(600)
 
-const currentMode = ref('airplane') // 'airplane' | 'registration' | 'pan'
+const currentMode = ref('registration') // 'registration' | 'pan'
 const isDrawing = ref(false)
 const isPanning = ref(false)
 const startPoint = ref(null)
 const currentPoint = ref(null)
 const lastPanPoint = ref(null)
 
-const airplaneBox = ref(props.initialAirplaneBox || null)
 const registrationBox = ref(props.initialRegistrationBox || null)
 
 const image = ref(null)
@@ -168,11 +159,6 @@ const draw = () => {
     )
   }
 
-  // 绘制机身框
-  if (airplaneBox.value) {
-    drawBox(ctx, airplaneBox.value, '#00ff00', '机身')
-  }
-
   // 绘制注册号框
   if (registrationBox.value) {
     drawBox(ctx, registrationBox.value, '#ff6600', '注册号')
@@ -180,8 +166,7 @@ const draw = () => {
 
   // 绘制当前正在绘制的框
   if (isDrawing.value && startPoint.value && currentPoint.value && currentMode.value !== 'pan') {
-    const color = currentMode.value === 'airplane' ? '#00ff00' : '#ff6600'
-    drawTempBox(ctx, startPoint.value, currentPoint.value, color)
+    drawTempBox(ctx, startPoint.value, currentPoint.value, '#ff6600')
   }
 }
 
@@ -329,10 +314,7 @@ const handleMouseUp = (e) => {
 
   // 检查框是否有效（宽高大于10像素）
   if (box.x2 - box.x1 > 10 && box.y2 - box.y1 > 10) {
-    if (currentMode.value === 'airplane') {
-      airplaneBox.value = box
-      emit('update:airplaneBox', box)
-    } else if (currentMode.value === 'registration') {
+    if (currentMode.value === 'registration') {
       registrationBox.value = box
       emit('update:registrationBox', box)
     }
@@ -367,9 +349,7 @@ const resetView = () => {
 
 // 清除所有框
 const clearBoxes = () => {
-  airplaneBox.value = null
   registrationBox.value = null
-  emit('update:airplaneBox', null)
   emit('update:registrationBox', null)
   draw()
 }
@@ -389,31 +369,24 @@ const calculateArea = (box, imgWidth, imgHeight) => {
 // 暴露方法给父组件
 defineExpose({
   calculateArea,
-  getAirplaneBox: () => airplaneBox.value,
   getRegistrationBox: () => registrationBox.value,
   resetView
 })
 
 // 监听图片变化
 watch(() => props.imageSrc, () => {
-  airplaneBox.value = null
   registrationBox.value = null
   loadImage()
 })
 
 // 监听初始值变化
-watch(() => props.initialAirplaneBox, (val) => {
-  airplaneBox.value = val
-  draw()
-})
-
 watch(() => props.initialRegistrationBox, (val) => {
   registrationBox.value = val
   draw()
 })
 
 // 键盘事件（空格键切换平移模式）
-let previousMode = 'airplane'
+let previousMode = 'registration'
 const handleKeyDown = (e) => {
   if (e.code === 'Space' && currentMode.value !== 'pan') {
     e.preventDefault()
@@ -489,10 +462,6 @@ canvas {
   width: 16px;
   height: 16px;
   border-radius: 2px;
-}
-
-.legend-item.airplane .legend-color {
-  background: #00ff00;
 }
 
 .legend-item.registration .legend-color {

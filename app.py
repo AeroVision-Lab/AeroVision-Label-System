@@ -121,7 +121,7 @@ def create_label():
     # 验证必填字段
     required_fields = ['original_file_name', 'type_id', 'type_name',
                        'airline_id', 'airline_name', 'clarity', 'block',
-                       'registration', 'airplane_area', 'registration_area']
+                       'registration', 'registration_area']
 
     for field in required_fields:
         if field not in data:
@@ -167,7 +167,7 @@ def update_label(label_id: int):
     # 验证必填字段
     required_fields = ['type_id', 'type_name', 'airline_id', 'airline_name',
                        'clarity', 'block', 'registration',
-                       'airplane_area', 'registration_area']
+                       'registration_area']
 
     for field in required_fields:
         if field not in data:

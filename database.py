@@ -40,7 +40,6 @@ class Database:
                 clarity REAL NOT NULL,
                 block REAL NOT NULL,
                 registration TEXT NOT NULL,
-                airplane_area TEXT NOT NULL,
                 registration_area TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -179,8 +178,8 @@ class Database:
             INSERT INTO labels (
                 file_name, original_file_name, type_id, type_name,
                 airline_id, airline_name, clarity, block,
-                registration, airplane_area, registration_area
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                registration, registration_area
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             data['file_name'],
             data['original_file_name'],
@@ -191,7 +190,6 @@ class Database:
             data['clarity'],
             data['block'],
             data['registration'],
-            data['airplane_area'],
             data['registration_area']
         ))
 
@@ -271,7 +269,6 @@ class Database:
                 clarity = ?,
                 block = ?,
                 registration = ?,
-                airplane_area = ?,
                 registration_area = ?
             WHERE id = ?
         """, (
@@ -282,7 +279,6 @@ class Database:
             data['clarity'],
             data['block'],
             data['registration'],
-            data['airplane_area'],
             data['registration_area'],
             label_id
         ))

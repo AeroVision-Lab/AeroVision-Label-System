@@ -108,10 +108,6 @@
                 <span>{{ selectedLabel.block.toFixed(2) }}</span>
               </div>
               <div class="info-row">
-                <label>机身区域</label>
-                <span class="area">{{ selectedLabel.airplane_area }}</span>
-              </div>
-              <div class="info-row">
                 <label>注册号区域</label>
                 <span class="area">{{ selectedLabel.registration_area }}</span>
               </div>
@@ -276,7 +272,6 @@ const editLabel = (label) => {
     registration: label.registration,
     clarity: label.clarity,
     block: label.block,
-    airplaneArea: label.airplane_area,
     registrationArea: label.registration_area
   }
   modalMode.value = 'edit'
@@ -307,7 +302,6 @@ const saveEdit = async () => {
       registration: editForm.value.registration,
       clarity: editForm.value.clarity,
       block: editForm.value.block,
-      airplane_area: editForm.value.airplaneArea,
       registration_area: editForm.value.registrationArea
     })
     closeModal()
