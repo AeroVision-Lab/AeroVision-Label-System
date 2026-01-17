@@ -81,6 +81,10 @@ export const getLockStatus = (filename) =>
 export const skipImage = (filename) =>
   api.post('/images/skip', { filename, user_id: userId })
 
+// 推理相关
+export const predictImage = (data) => api.post('/inference/predict', data)
+export const ocrImage = (data) => api.post('/inference/ocr', data)
+
 // 导出配置
 export const exportAirlines = () => window.open('/api/airlines/export', '_blank')
 export const exportAircraftTypes = () => window.open('/api/aircraft-types/export', '_blank')

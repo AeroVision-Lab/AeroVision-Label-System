@@ -1,13 +1,48 @@
 version: '3.8'
 
 services:
+  # 推理服务
+  v1-inference:
+    build:
+      context: ../Aerovision-V1-inference
+      dockerfile: Dockerfile
+    container_name: aerovision-inference
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../Aerovision-V1/training/ckpt/classify:/models:ro
+      - ./images:/app/images:ro
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=2
+      - YOLO_CLS_MODEL_PATH=/models/best.pt
+      - DEVICE=cuda
+      - TOP_K=5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - aerovision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 标注系统
   aerovision-backend:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: aerovision-label
     ports:
-        - "5000:5000"
+      - "5000:5000"
     volumes:
       - ./images:/app/images
       - ./labeled:/app/labeled
@@ -19,6 +54,10 @@ services:
       - LABELED_DIR=/app/labeled
       - DATABASE_PATH=/app/data/labels.db
       - EXPORT_IMAGES_THRESHOLD=100
+      - INFERENCE_SERVICE_URL=http://v1-inference:8000
+    depends_on:
+      v1-inference:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - aerovision-network

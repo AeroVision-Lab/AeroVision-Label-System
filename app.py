@@ -6,6 +6,8 @@ import csv
 import json
 import shutil
 import zipfile
+import requests
+import base64
 from io import StringIO, BytesIO
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
 from flask_cors import CORS
@@ -27,6 +29,7 @@ IMAGES_DIR = os.getenv('IMAGES_DIR', './images')
 LABELED_DIR = os.getenv('LABELED_DIR', './labeled')
 DATABASE_PATH = os.getenv('DATABASE_PATH', './labels.db')
 EXPORT_IMAGES_THRESHOLD = int(os.getenv('EXPORT_IMAGES_THRESHOLD', '100'))
+INFERENCE_SERVICE_URL = os.getenv('INFERENCE_SERVICE_URL', 'http://localhost:8000')
 
 # 确保目录存在
 os.makedirs(IMAGES_DIR, exist_ok=True)
@@ -81,6 +84,94 @@ def get_images():
         'total': len(images),
         'items': images
     })
+
+
+def send_from_directory(path):
+    """获取图片文件"""
+    pass
+
+
+# ==================== 模型推理相关 API ====================
+
+@app.route('/api/inference/predict', methods=['POST'])
+def predict_image():
+    """调用推理服务获取YOLOv8-cls预测结果"""
+    try:
+        data = request.get_json()
+        image_base64 = data.get('image_base64')
+        image_path = data.get('image_path')
+
+        if not image_base64 and not image_path:
+            return jsonify({'error': '请提供 image_base64 或 image_path'}), 400
+
+        # 如果提供了图片路径，读取并转换为base64
+        if image_path:
+            full_path = os.path.join(IMAGES_DIR, image_path)
+            if not os.path.exists(full_path):
+                return jsonify({'error': '图片不存在'}), 404
+
+            with open(full_path, 'rb') as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+        else:
+            image_data = image_base64
+
+        # 调用推理服务
+        try:
+            response = requests.post(
+                f'{INFERENCE_SERVICE_URL}/api/v1/predict',
+                json={'image_base64': image_data},
+                timeout=30
+            )
+            response.raise_for_status()
+            return jsonify(response.json())
+        except requests.RequestException as e:
+            print(f'[ERROR] 推理服务调用失败: {str(e)}')
+            return jsonify({'error': f'推理服务调用失败: {str(e)}'}), 503
+
+    except Exception as e:
+        print(f'[ERROR] 预测错误: {str(e)}')
+        return jsonify({'error': f'预测错误: {str(e)}'}), 500
+
+
+@app.route('/api/inference/ocr', methods=['POST'])
+def ocr_image():
+    """调用推理服务获取PaddleOCR识别结果"""
+    try:
+        data = request.get_json()
+        image_base64 = data.get('image_base64')
+        image_path = data.get('image_path')
+        crop_area = data.get('crop_area')  # [x1, y1, x2, y2]
+
+        if not image_base64 and not image_path:
+            return jsonify({'error': '请提供 image_base64 或 image_path'}), 400
+
+        # 如果提供了图片路径，读取并转换为base64
+        if image_path:
+            full_path = os.path.join(IMAGES_DIR, image_path)
+            if not os.path.exists(full_path):
+                return jsonify({'error': '图片不存在'}), 404
+
+            with open(full_path, 'rb') as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+        else:
+            image_data = image_base64
+
+        # 调用推理服务
+        try:
+            response = requests.post(
+                f'{INFERENCE_SERVICE_URL}/api/v1/ocr',
+                json={'image_base64': image_data},
+                timeout=30
+            )
+            response.raise_for_status()
+            return jsonify(response.json())
+        except requests.RequestException as e:
+            print(f'[ERROR] OCR服务调用失败: {str(e)}')
+            return jsonify({'error': f'OCR服务调用失败: {str(e)}'}), 503
+
+    except Exception as e:
+        print(f'[ERROR] OCR错误: {str(e)}')
+        return jsonify({'error': f'OCR错误: {str(e)}'}), 500
 
 
 @app.route('/api/images/<filename>', methods=['GET'])
@@ -157,8 +248,60 @@ def get_label(label_id: int):
 
 @app.route('/api/labels', methods=['POST'])
 def create_label():
-    """创建标注记录"""
+    """创建标注记录（支持模型预测辅助）"""
     data = request.get_json()
+
+    # 获取模型预测信息
+    model_prediction_type = data.get('model_prediction_type')
+    model_prediction_airline = data.get('model_prediction_airline')
+    model_confidence = data.get('model_confidence')
+    model_ocr_text = data.get('model_ocr_text')
+
+    # 获取用户输入
+    user_type_id = data.get('type_id')
+    user_airline_id = data.get('airline_id')
+    user_registration = data.get('registration')
+
+    # 获取是否使用模型预测的标记
+    use_model_type = data.get('use_model_type', False)
+    use_model_airline = data.get('use_model_airline', False)
+    use_model_ocr = data.get('use_model_ocr', False)
+
+    # 数据验证逻辑：输入框 > 模型预测 > 不给通过
+    if use_model_type and model_prediction_type:
+        # 如果选择使用模型预测，且模型有预测结果，使用预测值
+        final_type_id = model_prediction_type
+        final_type_name = model_prediction_type  # 简化处理，实际应该查询名称
+    elif user_type_id:
+        # 如果用户输入了值，使用用户输入
+        final_type_id = user_type_id
+        final_type_name = data.get('type_name', user_type_id)
+    else:
+        # 都没有，返回错误
+        return jsonify({'error': '必须输入机型或选择使用模型预测'}), 400
+
+    if use_model_airline and model_prediction_airline:
+        final_airline_id = model_prediction_airline
+        final_airline_name = model_prediction_airline
+    elif user_airline_id:
+        final_airline_id = user_airline_id
+        final_airline_name = data.get('airline_name', user_airline_id)
+    else:
+        return jsonify({'error': '必须输入航司或选择使用模型预测'}), 400
+
+    if use_model_ocr and model_ocr_text:
+        final_registration = model_ocr_text
+    elif user_registration:
+        final_registration = user_registration
+    else:
+        return jsonify({'error': '必须输入注册号或选择使用OCR识别'}), 400
+
+    # 更新数据中的值
+    data['type_id'] = final_type_id
+    data['type_name'] = final_type_name
+    data['airline_id'] = final_airline_id
+    data['airline_name'] = final_airline_name
+    data['registration'] = final_registration
 
     # 验证必填字段
     required_fields = ['original_file_name', 'type_id', 'type_name',

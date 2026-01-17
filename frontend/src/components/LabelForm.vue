@@ -2,11 +2,59 @@
   <form class="label-form" @submit.prevent="handleSubmit">
     <h3>标注信息</h3>
 
+    <!-- 模型预测展示 - 机型 -->
+    <div v-if="modelPrediction.type" class="model-prediction">
+      <label>模型预测（机型）</label>
+      <div class="prediction-card">
+        <div class="top1">
+          <span class="class-name">{{ modelPrediction.type.top1.class }}</span>
+          <span class="confidence">{{ (modelPrediction.type.top1.confidence * 100).toFixed(1) }}%</span>
+        </div>
+        <div v-if="modelPrediction.type.top1.confidence < 0.7" class="warning">
+          ⚠️ 置信度较低，请仔细确认
+        </div>
+        <label class="checkbox-label">
+          <input
+            type="checkbox"
+            v-model="useModelType"
+            @change="onUseModelTypeChange"
+          />
+          使用预测结果
+        </label>
+      </div>
+    </div>
+
+    <!-- 模型预测展示 - 注册号（OCR） -->
+    <div v-if="modelPrediction.ocr && modelPrediction.ocr.text" class="model-prediction">
+      <label>OCR识别（注册号）</label>
+      <div class="prediction-card">
+        <div class="ocr-result">
+          <span class="text">{{ modelPrediction.ocr.text }}</span>
+          <span class="confidence">{{ (modelPrediction.ocr.confidence * 100).toFixed(1) }}%</span>
+        </div>
+        <div v-if="modelPrediction.ocr.confidence < 0.7" class="warning">
+          ⚠️ 识别置信度较低，请仔细确认
+        </div>
+        <label class="checkbox-label">
+          <input
+            type="checkbox"
+            v-model="useModelOcr"
+            @change="onUseModelOcrChange"
+          />
+          使用识别结果
+        </label>
+      </div>
+    </div>
+
     <!-- 航司选择 -->
-    <div class="form-group">
+    <div class="form-group" :class="{ disabled: useModelAirline }">
       <label>航司</label>
       <div class="select-with-add">
-        <select v-model="form.airlineId" @change="onAirlineChange">
+        <select
+          v-model="form.airlineId"
+          @change="onAirlineChange"
+          :disabled="useModelAirline"
+        >
           <option value="">请选择航司</option>
           <option v-for="airline in airlines" :key="airline.code" :value="airline.code">
             {{ airline.code }} - {{ airline.name }}
@@ -23,10 +71,14 @@
     </div>
 
     <!-- 机型选择 -->
-    <div class="form-group">
+    <div class="form-group" :class="{ disabled: useModelType }">
       <label>机型</label>
       <div class="select-with-add">
-        <select v-model="form.typeId" @change="onTypeChange">
+        <select
+          v-model="form.typeId"
+          @change="onTypeChange"
+          :disabled="useModelType"
+        >
           <option value="">请选择机型</option>
           <option v-for="type in aircraftTypes" :key="type.code" :value="type.code">
             {{ type.code }} - {{ type.name }}
@@ -43,12 +95,13 @@
     </div>
 
     <!-- 注册号 -->
-    <div class="form-group">
+    <div class="form-group" :class="{ disabled: useModelOcr }">
       <label>注册号</label>
       <input
         v-model="form.registration"
         placeholder="如 B-1234"
         maxlength="20"
+        :disabled="useModelOcr"
       />
     </div>
 
@@ -116,19 +169,31 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import { getAirlines, getAircraftTypes, createAirline, createAircraftType } from '../api'
+import { getAirlines, getAircraftTypes, createAirline, createAircraftType, predictImage, ocrImage } from '../api'
 
 const props = defineProps({
   registrationArea: String,
-  initialData: Object
+  initialData: Object,
+  currentImage: Object  // 新增：当前图片信息
 })
 
-const emit = defineEmits(['submit', 'skip', 'skipAsInvalid'])
+const emit = defineEmits(['submit', 'skip', 'skipAsInvalid', 'fetchPrediction'])
 
 const airlines = ref([])
 const aircraftTypes = ref([])
 const loading = ref(false)
 const error = ref('')
+
+// 模型预测数据
+const modelPrediction = ref({
+  type: null,  // YOLOv8-cls 预测结果
+  ocr: null    // PaddleOCR 识别结果
+})
+
+// 是否使用模型预测
+const useModelType = ref(false)
+const useModelAirline = ref(false)
+const useModelOcr = ref(false)
 
 const form = ref({
   airlineId: '',
@@ -157,6 +222,60 @@ const isValid = computed(() => {
     props.registrationArea
   )
 })
+
+// 获取模型预测
+const fetchModelPrediction = async (imagePath) => {
+  if (!imagePath) return
+
+  try {
+    // 调用后端预测接口
+    const typeRes = await predictImage({ image_path: imagePath })
+    if (typeRes.data) {
+      modelPrediction.value.type = typeRes.data
+    }
+
+    // 调用后端OCR接口
+    const ocrRes = await ocrImage({ image_path: imagePath })
+    if (ocrRes.data) {
+      modelPrediction.value.ocr = ocrRes.data
+    }
+  } catch (e) {
+    console.error('获取模型预测失败:', e)
+  }
+}
+
+// 监听当前图片变化，自动获取预测
+watch(() => props.currentImage, (newImage) => {
+  if (newImage && newImage.filename) {
+    // 重置状态
+    modelPrediction.value = { type: null, ocr: null }
+    useModelType.value = false
+    useModelAirline.value = false
+    useModelOcr.value = false
+
+    // 获取预测
+    fetchModelPrediction(newImage.filename)
+  }
+}, { immediate: true })
+
+// 使用模型预测切换事件
+const onUseModelTypeChange = () => {
+  if (useModelType.value && modelPrediction.value.type) {
+    form.value.typeId = modelPrediction.value.type.top1.class
+    form.value.typeName = modelPrediction.value.type.top1.class
+  } else {
+    form.value.typeId = ''
+    form.value.typeName = ''
+  }
+}
+
+const onUseModelOcrChange = () => {
+  if (useModelOcr.value && modelPrediction.value.ocr) {
+    form.value.registration = modelPrediction.value.ocr.text
+  } else {
+    form.value.registration = ''
+  }
+}
 
 // 加载数据
 const loadData = async () => {
@@ -256,7 +375,16 @@ const handleSubmit = async () => {
       registration: form.value.registration,
       clarity: form.value.clarity,
       block: form.value.block,
-      registration_area: props.registrationArea
+      registration_area: props.registrationArea,
+      // 模型预测信息
+      model_prediction_type: modelPrediction.value.type?.top1?.class || null,
+      model_prediction_airline: null,  // 暂不支持航司预测
+      model_confidence: modelPrediction.value.type?.top1?.confidence || null,
+      model_ocr_text: modelPrediction.value.ocr?.text || null,
+      // 是否使用模型预测
+      use_model_type: useModelType.value,
+      use_model_airline: useModelAirline.value,
+      use_model_ocr: useModelOcr.value
     }
     emit('submit', data)
   } catch (e) {
@@ -288,6 +416,10 @@ const reset = () => {
     block: 0
   }
   error.value = ''
+  modelPrediction.value = { type: null, ocr: null }
+  useModelType.value = false
+  useModelAirline.value = false
+  useModelOcr.value = false
 }
 
 // 监听初始数据

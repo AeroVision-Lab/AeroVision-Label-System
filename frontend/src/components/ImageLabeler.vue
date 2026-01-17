@@ -40,6 +40,7 @@
         <LabelForm
           ref="labelFormRef"
           :registration-area="registrationArea"
+          :current-image="currentImage"
           @submit="handleSubmit"
           @skip="handleSkip"
           @skip-as-invalid="handleSkipAsInvalid"
