@@ -10,6 +10,12 @@ models:
     path: /app/models/yolo-cls-airline.pt
     device: cuda  # cuda 或 cpu
     image_size: 640
+  detection:
+    path: /app/models/yolo-det.pt
+    device: cuda  # cuda 或 cpu
+    image_size: 640
+    conf_threshold: 0.25  # 置信度阈值
+    iou_threshold: 0.45   # NMS IOU阈值
 
 # OCR configuration
 ocr:
@@ -29,7 +35,7 @@ quality:
 
 # Confidence thresholds
 thresholds:
-  high_confidence: 0.95      # >= 95% confidence: can auto-approve
+  high_confidence: 0.95      # >= 95% 高置信度（仅用于统计，不自动批准）
   low_confidence: 0.80       # < 80% confidence: must review
 
 # HDBSCAN configuration for new class detection
@@ -51,7 +57,7 @@ auto_annotate:
 # Review settings
 review:
   push_order: "confidence_desc"
-  auto_approve_threshold: 0.95
+  auto_approve_threshold: 1.1  # 设置为 >1 禁用自动批准，所有图片必须人工审核
 
 # Performance settings
 performance:

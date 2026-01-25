@@ -134,6 +134,12 @@ class AIPredictor:
             'quality_details': quality_result
         }
 
+        # 添加检测结果
+        detection_result = classification_result.get('detection')
+        if detection_result:
+            result['detection'] = detection_result
+            result['detection_details'] = detection_result
+
         return result
 
     def predict_batch(

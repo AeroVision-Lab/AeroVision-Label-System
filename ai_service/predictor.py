@@ -13,11 +13,11 @@ logger = logging.getLogger(__name__)
 
 
 class ModelPredictor:
-    """YOLOv8分类器预测器"""
+    """YOLOv8分类器和检测器预测器"""
 
     def __init__(self, config: Dict[str, Any]):
         """
-        初始化分类器
+        初始化分类器和检测器
 
         Args:
             config: 配置字典，包含模型路径和参数
@@ -27,10 +27,18 @@ class ModelPredictor:
         self.device = config['aircraft'].get('device', 'cuda')
         self.image_size = config['aircraft'].get('image_size', 640)
 
+        # Detection 配置
+        detection_config = config.get('detection', {})
+        self.detection_model_path = detection_config.get('path', '')
+        self.detection_conf = detection_config.get('conf_threshold', 0.25)
+        self.detection_iou = detection_config.get('iou_threshold', 0.45)
+        self.detection_enabled = bool(self.detection_model_path)
+
         self._aircraft_model: Optional[YOLO] = None
         self._airline_model: Optional[YOLO] = None
+        self._detection_model: Optional[YOLO] = None
 
-        logger.info(f"ModelPredictor initialized with device={self.device}, imgsz={self.image_size}")
+        logger.info(f"ModelPredictor initialized with device={self.device}, imgsz={self.image_size}, detection_enabled={self.detection_enabled}")
 
     @property
     def aircraft_model(self) -> YOLO:
@@ -45,6 +53,15 @@ class ModelPredictor:
         if self._airline_model is None:
             self._load_airline_model()
         return self._airline_model
+
+    @property
+    def detection_model(self) -> Optional[YOLO]:
+        """获取或加载检测模型"""
+        if not self.detection_enabled:
+            return None
+        if self._detection_model is None:
+            self._load_detection_model()
+        return self._detection_model
 
     def _load_aircraft_model(self):
         """加载机型分类模型"""
@@ -66,10 +83,25 @@ class ModelPredictor:
         self._airline_model = YOLO(str(model_path))
         logger.info("Airline model loaded successfully")
 
+    def _load_detection_model(self):
+        """加载目标检测模型"""
+        if not self.detection_enabled:
+            return
+
+        model_path = Path(self.detection_model_path)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Detection model not found: {model_path}")
+
+        logger.info(f"Loading detection model from: {model_path}")
+        self._detection_model = YOLO(str(model_path))
+        logger.info("Detection model loaded successfully")
+
     def load_models(self):
         """显式加载所有模型"""
         self._load_aircraft_model()
         self._load_airline_model()
+        if self.detection_enabled:
+            self._load_detection_model()
 
     def predict(self, image_path: str) -> Dict[str, Any]:
         """
@@ -87,9 +119,67 @@ class ModelPredictor:
         # 预测航司
         airline_result = self._predict_single(self.airline_model, image_path, "airline")
 
-        return {
+        result = {
             'aircraft': aircraft_result,
             'airline': airline_result
+        }
+
+        # 目标检测
+        if self.detection_enabled:
+            detection_result = self.detect(image_path)
+            result['detection'] = detection_result
+
+        return result
+
+    def detect(self, image_path: str) -> Dict[str, Any]:
+        """
+        目标检测
+
+        Args:
+            image_path: 图片文件路径
+
+        Returns:
+            包含检测结果的字典
+        """
+        if not self.detection_enabled or self.detection_model is None:
+            return {'enabled': False, 'boxes': []}
+
+        results = self.detection_model.predict(
+            image_path,
+            imgsz=self.image_size,
+            device=self.device,
+            conf=self.detection_conf,
+            iou=self.detection_iou,
+            verbose=False
+        )
+
+        result = results[0]
+        boxes = result.boxes
+        class_names = self.detection_model.model.names
+
+        detections = []
+        for i in range(len(boxes)):
+            box = boxes[i]
+            # xyxy 格式的边界框
+            xyxy = box.xyxy[0].tolist()
+            # xywhn 格式（归一化的中心点+宽高）
+            xywhn = box.xywhn[0].tolist() if box.xywhn is not None else None
+            class_id = int(box.cls[0])
+            confidence = float(box.conf[0])
+            class_name = class_names.get(class_id, f"class_{class_id}")
+
+            detections.append({
+                'class_id': class_id,
+                'class_name': class_name,
+                'confidence': confidence,
+                'xyxy': xyxy,  # [x1, y1, x2, y2] 像素坐标
+                'xywhn': xywhn,  # [x_center, y_center, width, height] 归一化坐标
+            })
+
+        return {
+            'enabled': True,
+            'count': len(detections),
+            'boxes': detections
         }
 
     def _predict_single(self, model: YOLO, image_path: str, model_name: str) -> Dict[str, Any]:
@@ -143,6 +233,15 @@ class ModelPredictor:
         class_names = self.airline_model.model.names
         return [class_names.get(i, f"class_{i}") for i in range(len(class_names))]
 
+    def get_detection_class_names(self):
+        """获取检测类别名称"""
+        if not self.detection_enabled:
+            return []
+        if self._detection_model is None:
+            self._load_detection_model()
+        class_names = self.detection_model.model.names
+        return [class_names.get(i, f"class_{i}") for i in range(len(class_names))]
+
     def unload_models(self):
         """卸载模型并释放内存"""
         if self._aircraft_model is not None:
@@ -154,6 +253,11 @@ class ModelPredictor:
             del self._airline_model
             self._airline_model = None
             logger.info("Airline model unloaded")
+
+        if self._detection_model is not None:
+            del self._detection_model
+            self._detection_model = None
+            logger.info("Detection model unloaded")
 
         # 清理 PyTorch 缓存
         try:
