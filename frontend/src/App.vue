@@ -22,6 +22,10 @@
         v-if="currentTab === 'label'"
         @labeled="onLabeled"
       />
+      <ReviewPanel
+        v-else-if="currentTab === 'review'"
+        @refresh="onRefresh"
+      />
       <LabelList
         v-else-if="currentTab === 'list'"
         ref="labelListRef"
@@ -43,10 +47,12 @@ import { ref, onMounted } from 'vue'
 import ImageLabeler from './components/ImageLabeler.vue'
 import LabelList from './components/LabelList.vue'
 import StatsPanel from './components/StatsPanel.vue'
+import ReviewPanel from './components/ReviewPanel.vue'
 import HelpModal from './components/HelpModal.vue'
 
 const tabs = [
   { id: 'label', name: '标注' },
+  { id: 'review', name: 'AI复审' },
   { id: 'list', name: '已标注' },
   { id: 'stats', name: '统计' }
 ]

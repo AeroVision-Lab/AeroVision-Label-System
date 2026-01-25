@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  aerovision-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aerovision-label
+    volumes:
+      - /mnt/disk/AeroVision/images:/app/images
+      - /mnt/disk/AeroVision/labeled:/app/labeled
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml
+      - /home/wlx:/app/models:ro  # 挂载模型文件目录（只读）
+    environment:
+      - FLASK_ENV=production
+      - IMAGES_DIR=/app/images
+      - LABELED_DIR=/app/labeled
+      - DATABASE_PATH=/app/data/labels.db
+      - AI_CONFIG_PATH=/app/config.yaml
+      - GLM_API_KEY=${GLM_API_KEY}  # 质量评估API密钥（可选）
+    runtime: nvidia  # 启用GPU支持（需要nvidia-docker）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - nginx-proxy-network
+    # GPU共享设置（可选）
+    shm_size: '8gb'
+
+networks:
+  nginx-proxy-network:
+    external: true

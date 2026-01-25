@@ -1,0 +1,53 @@
+# AeroVision Label System - AI Configuration
+
+# Model paths (can be absolute or relative paths)
+models:
+  aircraft:
+    path: /home/wlx/yolo26x-cls-aircraft.pt
+    device: cuda
+    image_size: 640
+  airline:
+    path: /home/wlx/yolo26x-cls-airline.pt
+    device: cuda
+    image_size: 640
+
+# OCR configuration
+ocr:
+  enabled: true
+  lang: en
+  use_angle_cls: true
+
+# Quality assessment configuration
+quality_assessor:
+  enabled: true
+  api_key: "bb065240b67b4e5a948dc2d6595fdb0e.La2oyUHrBtztpuZ8"  # Set via environment variable GLM_API_KEY
+  api_url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+  model: "glm-4.6v"
+
+# Confidence thresholds
+thresholds:
+  high_confidence: 0.95      # >= 95% confidence: can auto-approve
+  low_confidence: 0.80       # < 80% confidence: must review
+
+# HDBSCAN configuration for new class detection
+hdbscan:
+  enabled: true
+  min_cluster_size: 5
+  min_samples: 3
+  metric: "euclidean"
+  cluster_selection_method: "eom"
+  prediction_data: true
+
+# Auto-annotation settings
+auto_annotate:
+  enabled: true
+  auto_trigger: true         # Automatically run AI prediction on new images
+  batch_size: 32
+  num_workers: 4
+
+# Review settings
+review:
+  # Push order: new classes first (by outlier score desc), then existing classes (by confidence asc)
+  push_order: "confidence_desc"
+  # Review status values: 'pending', 'approved', 'rejected', 'auto_approved'
+  auto_approve_threshold: 0.95

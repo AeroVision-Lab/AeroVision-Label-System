@@ -41,9 +41,19 @@ class Database:
                 block REAL NOT NULL,
                 registration TEXT NOT NULL,
                 registration_area TEXT NOT NULL,
+                review_status TEXT DEFAULT 'pending',
+                ai_approved INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # 检查并添加review_status字段（用于数据库迁移）
+        cursor.execute("PRAGMA table_info(labels)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'review_status' not in columns:
+            cursor.execute("ALTER TABLE labels ADD COLUMN review_status TEXT DEFAULT 'pending'")
+        if 'ai_approved' not in columns:
+            cursor.execute("ALTER TABLE labels ADD COLUMN ai_approved INTEGER DEFAULT 0")
 
         # 创建航司表
         cursor.execute('''
@@ -79,6 +89,29 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename TEXT NOT NULL UNIQUE,
                 skipped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 创建AI预测记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL UNIQUE,
+                aircraft_class TEXT NOT NULL,
+                aircraft_confidence REAL NOT NULL,
+                airline_class TEXT NOT NULL,
+                airline_confidence REAL NOT NULL,
+                registration TEXT,
+                registration_area TEXT,
+                registration_confidence REAL DEFAULT 0.0,
+                clarity REAL DEFAULT 0.0,
+                block REAL DEFAULT 0.0,
+                quality_confidence REAL DEFAULT 0.0,
+                is_new_class INTEGER DEFAULT 0,
+                outlier_score REAL DEFAULT 0.0,
+                prediction_time REAL NOT NULL,
+                processed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
@@ -616,4 +649,193 @@ class Database:
             # 已经被跳过
             conn.close()
             return False
+
+    # ==================== AI预测操作 ====================
+
+    def add_ai_prediction(self, data: dict) -> dict:
+        """添加AI预测记录"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                INSERT INTO ai_predictions (
+                    filename, aircraft_class, aircraft_confidence,
+                    airline_class, airline_confidence, registration,
+                    registration_area, registration_confidence,
+                    clarity, block, quality_confidence,
+                    is_new_class, outlier_score, prediction_time
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                data['filename'],
+                data['aircraft_class'],
+                data['aircraft_confidence'],
+                data['airline_class'],
+                data['airline_confidence'],
+                data.get('registration', ''),
+                data.get('registration_area', ''),
+                data.get('registration_confidence', 0.0),
+                data.get('clarity', 0.0),
+                data.get('block', 0.0),
+                data.get('quality_confidence', 0.0),
+                data.get('is_new_class', 0),
+                data.get('outlier_score', 0.0),
+                data['prediction_time']
+            ))
+
+            conn.commit()
+            pred_id = cursor.lastrowid
+            conn.close()
+            return {'id': pred_id, 'filename': data['filename']}
+        except sqlite3.IntegrityError:
+            conn.close()
+            return {'error': 'Prediction already exists'}
+
+    def get_ai_prediction(self, filename: str) -> Optional[dict]:
+        """获取指定文件的AI预测结果"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM ai_predictions WHERE filename = ?', (filename,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def get_unprocessed_predictions(self, limit: int = None) -> list:
+        """获取未处理的AI预测记录（按优先级排序）"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # 排序优先级：
+        # 1. 新类别 (is_new_class=1) 按outlier_score降序
+        # 2. 非新类别 按置信度升序（低置信度优先）
+        if limit:
+            cursor.execute('''
+                SELECT * FROM ai_predictions
+                WHERE processed = 0
+                ORDER BY is_new_class DESC, outlier_score DESC,
+                         MIN(aircraft_confidence, airline_confidence) ASC
+                LIMIT ?
+            ''', (limit,))
+        else:
+            cursor.execute('''
+                SELECT * FROM ai_predictions
+                WHERE processed = 0
+                ORDER BY is_new_class DESC, outlier_score DESC,
+                         MIN(aircraft_confidence, airline_confidence) ASC
+            ''')
+
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def get_auto_approvable_predictions(self) -> list:
+        """获取可以直接自动批准的预测（置信度>=95%且非新类）"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM ai_predictions
+            WHERE processed = 0
+              AND is_new_class = 0
+              AND aircraft_confidence >= ?
+              AND airline_confidence >= ?
+            ORDER BY prediction_time DESC
+        ''', (0.95, 0.95))
+
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def mark_prediction_processed(self, filename: str) -> bool:
+        """标记预测为已处理"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE ai_predictions SET processed = 1 WHERE filename = ?',
+            (filename,)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def update_label_with_ai_data(self, label_id: int, ai_data: dict) -> bool:
+        """更新标注记录的AI相关字段"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE labels SET
+                review_status = ?,
+                ai_approved = ?
+            WHERE id = ?
+        """, (
+            ai_data.get('review_status', 'pending'),
+            1 if ai_data.get('ai_approved', False) else 0,
+            label_id
+        ))
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
+    def get_review_stats(self) -> dict:
+        """获取复审统计信息"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # 总预测数
+        cursor.execute('SELECT COUNT(*) as count FROM ai_predictions')
+        total_predictions = cursor.fetchone()['count']
+
+        # 未处理数
+        cursor.execute('SELECT COUNT(*) as count FROM ai_predictions WHERE processed = 0')
+        pending_count = cursor.fetchone()['count']
+
+        # 新类别数
+        cursor.execute('SELECT COUNT(*) as count FROM ai_predictions WHERE is_new_class = 1 AND processed = 0')
+        new_class_count = cursor.fetchone()['count']
+
+        # 可自动批准数
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM ai_predictions
+            WHERE processed = 0 AND is_new_class = 0
+              AND aircraft_confidence >= 0.95 AND airline_confidence >= 0.95
+        ''')
+        auto_approve_count = cursor.fetchone()['count']
+
+        # 标注表复审状态统计
+        cursor.execute('''
+            SELECT review_status, COUNT(*) as count
+            FROM labels
+            GROUP BY review_status
+        ''')
+        review_status_counts = {row['review_status']: row['count'] for row in cursor.fetchall()}
+
+        conn.close()
+
+        return {
+            'total_predictions': total_predictions,
+            'pending_count': pending_count,
+            'new_class_count': new_class_count,
+            'auto_approve_count': auto_approve_count,
+            'review_status_counts': review_status_counts
+        }
+
+    def bulk_mark_processed(self, filenames: list) -> int:
+        """批量标记预测为已处理"""
+        if not filenames:
+            return 0
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        placeholders = ','.join('?' * len(filenames))
+        cursor.execute(
+            f'UPDATE ai_predictions SET processed = 1 WHERE filename IN ({placeholders})',
+            filenames
+        )
+
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected
 
