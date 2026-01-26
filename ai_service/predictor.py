@@ -15,6 +15,50 @@ logger = logging.getLogger(__name__)
 class ModelPredictor:
     """YOLOv8分类器和检测器预测器"""
 
+    @staticmethod
+    def _resolve_model_path(path: str, model_type: str) -> str:
+        """
+        解析模型路径，如果文件不存在则尝试使用备选路径
+
+        Args:
+            path: 原始路径
+            model_type: 模型类型 ('aircraft', 'airline', 'detection')
+
+        Returns:
+            有效的模型路径
+        """
+        if Path(path).exists():
+            return path
+
+        logger.warning(f"Model path not found: {path}")
+
+        # 定义模型文件名的映射
+        model_names = {
+            "aircraft": ["yolo26x-cls-aircraft.pt", "yolov8n-cls-aircraft.pt"],
+            "airline": ["yolo26x-cls-airline.pt", "yolov8n-cls-airline.pt"],
+            "detection": ["yolo-det.pt", "yolov8n-det.pt"],
+        }
+
+        # 定义可能的路径前缀
+        path_prefixes = [
+            "/app/models/",
+            "/home/wlx/",
+            "./models/",
+            "./",
+        ]
+
+        # 生成所有可能的路径
+        if model_type in model_names:
+            for model_name in model_names[model_type]:
+                for prefix in path_prefixes:
+                    alt_path = prefix + model_name
+                    if Path(alt_path).exists():
+                        logger.info(f"Using alternative model path: {alt_path}")
+                        return alt_path
+
+        logger.error(f"No valid model path found for {model_type}")
+        return path  # 返回原始路径，让后续调用处理错误
+
     def __init__(self, config: Dict[str, Any]):
         """
         初始化分类器和检测器
@@ -22,23 +66,43 @@ class ModelPredictor:
         Args:
             config: 配置字典，包含模型路径和参数
         """
-        self.aircraft_model_path = config['aircraft']['path']
-        self.airline_model_path = config['airline']['path']
-        self.device = config['aircraft'].get('device', 'cuda')
-        self.image_size = config['aircraft'].get('image_size', 640)
+        # 获取并验证模型路径
+        self.aircraft_model_path = self._resolve_model_path(
+            config["aircraft"]["path"], "aircraft"
+        )
+        self.airline_model_path = self._resolve_model_path(
+            config["airline"]["path"], "airline"
+        )
+        self.device = config["aircraft"].get("device", "cuda")
+        self.image_size = config["aircraft"].get("image_size", 640)
 
         # Detection 配置
-        detection_config = config.get('detection', {})
-        self.detection_model_path = detection_config.get('path', '')
-        self.detection_conf = detection_config.get('conf_threshold', 0.25)
-        self.detection_iou = detection_config.get('iou_threshold', 0.45)
+        detection_config = config.get("detection", {})
+        detection_path = detection_config.get("path", "")
+        if detection_path:
+            self.detection_model_path = self._resolve_model_path(
+                detection_path, "detection"
+            )
+            # 检查解析后的路径是否存在
+            if not Path(self.detection_model_path).exists():
+                logger.warning(
+                    f"Detection model not found after resolution, disabling detection"
+                )
+                self.detection_model_path = ""
+        else:
+            self.detection_model_path = ""
+
+        self.detection_conf = detection_config.get("conf_threshold", 0.25)
+        self.detection_iou = detection_config.get("iou_threshold", 0.45)
         self.detection_enabled = bool(self.detection_model_path)
 
         self._aircraft_model: Optional[YOLO] = None
         self._airline_model: Optional[YOLO] = None
         self._detection_model: Optional[YOLO] = None
 
-        logger.info(f"ModelPredictor initialized with device={self.device}, imgsz={self.image_size}, detection_enabled={self.detection_enabled}")
+        logger.info(
+            f"ModelPredictor initialized with device={self.device}, imgsz={self.image_size}, detection_enabled={self.detection_enabled}"
+        )
 
     @property
     def aircraft_model(self) -> YOLO:
@@ -114,20 +178,19 @@ class ModelPredictor:
             包含预测结果的字典
         """
         # 预测机型
-        aircraft_result = self._predict_single(self.aircraft_model, image_path, "aircraft")
+        aircraft_result = self._predict_single(
+            self.aircraft_model, image_path, "aircraft"
+        )
 
         # 预测航司
         airline_result = self._predict_single(self.airline_model, image_path, "airline")
 
-        result = {
-            'aircraft': aircraft_result,
-            'airline': airline_result
-        }
+        result = {"aircraft": aircraft_result, "airline": airline_result}
 
         # 目标检测
         if self.detection_enabled:
             detection_result = self.detect(image_path)
-            result['detection'] = detection_result
+            result["detection"] = detection_result
 
         return result
 
@@ -142,7 +205,7 @@ class ModelPredictor:
             包含检测结果的字典
         """
         if not self.detection_enabled or self.detection_model is None:
-            return {'enabled': False, 'boxes': []}
+            return {"enabled": False, "boxes": []}
 
         results = self.detection_model.predict(
             image_path,
@@ -150,7 +213,7 @@ class ModelPredictor:
             device=self.device,
             conf=self.detection_conf,
             iou=self.detection_iou,
-            verbose=False
+            verbose=False,
         )
 
         result = results[0]
@@ -168,27 +231,24 @@ class ModelPredictor:
             confidence = float(box.conf[0])
             class_name = class_names.get(class_id, f"class_{class_id}")
 
-            detections.append({
-                'class_id': class_id,
-                'class_name': class_name,
-                'confidence': confidence,
-                'xyxy': xyxy,  # [x1, y1, x2, y2] 像素坐标
-                'xywhn': xywhn,  # [x_center, y_center, width, height] 归一化坐标
-            })
+            detections.append(
+                {
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "confidence": confidence,
+                    "xyxy": xyxy,  # [x1, y1, x2, y2] 像素坐标
+                    "xywhn": xywhn,  # [x_center, y_center, width, height] 归一化坐标
+                }
+            )
 
-        return {
-            'enabled': True,
-            'count': len(detections),
-            'boxes': detections
-        }
+        return {"enabled": True, "count": len(detections), "boxes": detections}
 
-    def _predict_single(self, model: YOLO, image_path: str, model_name: str) -> Dict[str, Any]:
+    def _predict_single(
+        self, model: YOLO, image_path: str, model_name: str
+    ) -> Dict[str, Any]:
         """使用单个模型进行预测"""
         results = model.predict(
-            image_path,
-            imgsz=self.image_size,
-            device=self.device,
-            verbose=False
+            image_path, imgsz=self.image_size, device=self.device, verbose=False
         )
 
         result = results[0]
@@ -207,7 +267,7 @@ class ModelPredictor:
             {
                 "id": int(idx),
                 "name": class_names.get(int(idx), "Unknown"),
-                "prob": float(prob)
+                "prob": float(prob),
             }
             for idx, prob in zip(top5_indices, top5_probs)
         ]
@@ -216,7 +276,7 @@ class ModelPredictor:
             "class_id": class_id,
             "class_name": class_name,
             "confidence": confidence,
-            "top5": top5
+            "top5": top5,
         }
 
     def get_aircraft_class_names(self):
@@ -262,6 +322,7 @@ class ModelPredictor:
         # 清理 PyTorch 缓存
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 logger.info("CUDA cache cleared")

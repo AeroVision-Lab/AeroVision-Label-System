@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class AIPredictor:
     """统一的AI预测服务"""
 
-    def __init__(self, config_path: str = './config.yaml'):
+    def __init__(self, config_path: str = "./config.yaml"):
         """
         初始化AI预测服务
 
@@ -32,10 +32,10 @@ class AIPredictor:
         self.config = self._load_config(config_path)
 
         # 初始化子模块
-        self.predictor = ModelPredictor(self.config['models'])
-        self.ocr = RegistrationOCR(self.config.get('ocr', {}))
-        self.quality = ImageQualityAssessor(self.config.get('quality', {}))
-        self.hdbscan = HDBSCANNewClassDetector(self.config.get('hdbscan', {}))
+        self.predictor = ModelPredictor(self.config["models"])
+        self.ocr = RegistrationOCR(self.config.get("ocr", {}))
+        self.quality = ImageQualityAssessor(self.config.get("quality", {}))
+        self.hdbscan = HDBSCANNewClassDetector(self.config.get("hdbscan", {}))
 
         # 模型已加载标志
         self._models_loaded = False
@@ -46,26 +46,80 @@ class AIPredictor:
         """加载YAML配置文件"""
         config_file = Path(config_path)
         if not config_file.exists():
-            logger.warning(f"Config file not found: {config_path}, using default config")
+            logger.warning(
+                f"Config file not found: {config_path}, using default config"
+            )
             return self._get_default_config()
 
-        with open(config_file, 'r', encoding='utf-8') as f:
+        with open(config_file, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
+
+        # 检查并替换模型路径（如果文件不存在，尝试使用默认路径）
+        models_config = config.get("models", {})
+        for model_type in ["aircraft", "airline", "detection"]:
+            if model_type in models_config:
+                original_path = models_config[model_type].get("path", "")
+                if original_path and not Path(original_path).exists():
+                    logger.warning(f"Model path not found: {original_path}")
+
+                    # 尝试使用备选路径
+                    alt_paths = self._get_alt_model_paths(model_type)
+                    for alt_path in alt_paths:
+                        if Path(alt_path).exists():
+                            logger.info(f"Using alternative model path: {alt_path}")
+                            models_config[model_type]["path"] = alt_path
+                            break
+                    else:
+                        logger.error(f"No valid model path found for {model_type}")
 
         logger.info(f"Config loaded from: {config_path}")
         return config
 
+    def _get_alt_model_paths(self, model_type: str) -> List[str]:
+        """获取模型的备选路径"""
+        # 定义模型文件名的映射
+        model_names = {
+            "aircraft": ["yolo26x-cls-aircraft.pt", "yolov8n-cls-aircraft.pt"],
+            "airline": ["yolo26x-cls-airline.pt", "yolov8n-cls-airline.pt"],
+            "detection": ["yolo-det.pt", "yolov8n-det.pt"],
+        }
+
+        # 定义可能的路径前缀
+        path_prefixes = [
+            "/app/models/",
+            "/home/wlx/",
+            "./models/",
+            "./",
+        ]
+
+        # 生成所有可能的路径
+        alt_paths = []
+        if model_type in model_names:
+            for model_name in model_names[model_type]:
+                for prefix in path_prefixes:
+                    alt_paths.append(prefix + model_name)
+
+        return alt_paths
+
     def _get_default_config(self) -> Dict[str, Any]:
         """获取默认配置"""
         return {
-            'models': {
-                'aircraft': {'path': '/home/wlx/yolo26x-cls-aircraft.pt', 'device': 'cuda', 'image_size': 640},
-                'airline': {'path': '/home/wlx/yolo26x-cls-airline.pt', 'device': 'cuda', 'image_size': 640}
+            "models": {
+                "aircraft": {
+                    "path": "/home/wlx/yolo26x-cls-aircraft.pt",
+                    "device": "cuda",
+                    "image_size": 640,
+                },
+                "airline": {
+                    "path": "/home/wlx/yolo26x-cls-airline.pt",
+                    "device": "cuda",
+                    "image_size": 640,
+                },
             },
-            'ocr': {'enabled': True, 'lang': 'ch', 'use_angle_cls': True},
-            'quality_assessor': {'enabled': True},
-            'hdbscan': {'enabled': True, 'min_cluster_size': 5, 'min_samples': 3},
-            'thresholds': {'high_confidence': 0.95, 'low_confidence': 0.80}
+            "ocr": {"enabled": True, "lang": "ch", "use_angle_cls": True},
+            "quality_assessor": {"enabled": True},
+            "hdbscan": {"enabled": True, "min_cluster_size": 5, "min_samples": 3},
+            "thresholds": {"high_confidence": 0.95, "low_confidence": 0.80},
         }
 
     def load_models(self):
@@ -95,8 +149,8 @@ class AIPredictor:
         # 1. 分类预测（机型和航司）
         classification_result = self.predictor.predict(image_path)
 
-        aircraft_pred = classification_result['aircraft']
-        airline_pred = classification_result['airline']
+        aircraft_pred = classification_result["aircraft"]
+        airline_pred = classification_result["airline"]
 
         # 2. OCR识别
         ocr_result = self.ocr.recognize(image_path)
@@ -119,30 +173,46 @@ class AIPredictor:
 
         prediction_time = time.time() - start_time
 
-        # 简化返回结果
+        # 从质量评估结果中提取 clarity 和 block
+        # clarity = sharpness, block = 1 - composition (构图差表示可能有遮挡)
+        quality_details = quality_result.get("details", {})
+        clarity = quality_details.get("sharpness", quality_result.get("score", 0.8))
+        # block 使用 1 - 综合分数，分数越低遮挡越严重
+        block = 1.0 - quality_result.get("score", 0.8)
+
+        # 组合结果
         result = {
-            'filename': Path(image_path).name,
-            'aircraft_class': aircraft_pred['class_name'],
-            'aircraft_confidence': aircraft_pred['confidence'],
-            'airline_class': airline_pred['class_name'],
-            'airline_confidence': airline_pred['confidence'],
-            'registration': ocr_result['registration'],
-            'registration_area': registration_area,
-            'quality_score': quality_result.get('score', 0.0),
-            'prediction_time': prediction_time
+            "filename": Path(image_path).name,
+            "aircraft_class": aircraft_pred["class_name"],
+            "aircraft_confidence": aircraft_pred["confidence"],
+            "airline_class": airline_pred["class_name"],
+            "airline_confidence": airline_pred["confidence"],
+            "registration": ocr_result["registration"],
+            "registration_area": ocr_result.get("registration_area", ""),
+            "registration_confidence": ocr_result["confidence"],
+            "clarity": round(clarity, 4),
+            "block": round(block, 4),
+            "quality_score": quality_result.get("score", 0.0),
+            "quality_pass": quality_result.get("pass", False),
+            "prediction_time": prediction_time,
+            "classification_details": {
+                "aircraft": aircraft_pred,
+                "airline": airline_pred,
+            },
+            "ocr_details": ocr_result,
+            "quality_details": quality_result,
         }
 
-        logger.info(f"Prediction completed: {filename} | Aircraft: {aircraft_pred['class_name']}({aircraft_pred['confidence']:.3f}) | "
-                    f"Airline: {airline_pred['class_name']}({airline_pred['confidence']:.3f}) | "
-                    f"Registration: {ocr_result['registration']} | Quality: {quality_result.get('score', 0.0):.3f} | "
-                    f"Time: {prediction_time:.2f}s")
+        # 添加检测结果
+        detection_result = classification_result.get("detection")
+        if detection_result:
+            result["detection"] = detection_result
+            result["detection_details"] = detection_result
 
         return result
 
     def predict_batch(
-        self,
-        image_paths: List[str],
-        detect_new_classes: bool = True
+        self, image_paths: List[str], detect_new_classes: bool = True
     ) -> Dict[str, Any]:
         """
         批量预测
@@ -169,14 +239,16 @@ class AIPredictor:
             except Exception as e:
                 logger.error(f"Error processing {image_path}: {e}")
                 # 添加错误记录
-                predictions.append({
-                    'filename': Path(image_path).name,
-                    'error': str(e),
-                    'aircraft_class': '',
-                    'aircraft_confidence': 0.0,
-                    'airline_class': '',
-                    'airline_confidence': 0.0
-                })
+                predictions.append(
+                    {
+                        "filename": Path(image_path).name,
+                        "error": str(e),
+                        "aircraft_class": "",
+                        "aircraft_confidence": 0.0,
+                        "airline_class": "",
+                        "airline_confidence": 0.0,
+                    }
+                )
 
         # 新类别检测
         new_class_indices = []
@@ -186,38 +258,39 @@ class AIPredictor:
         # 标记新类别
         for i, idx in enumerate(new_class_indices):
             if idx < len(predictions):
-                predictions[idx]['is_new_class'] = 1
+                predictions[idx]["is_new_class"] = 1
                 # 获取异常分数
                 outlier_scores = self.hdbscan.get_outlier_scores()
                 if idx < len(outlier_scores):
-                    predictions[idx]['outlier_score'] = float(outlier_scores[idx])
+                    predictions[idx]["outlier_score"] = float(outlier_scores[idx])
 
         # 默认值
         for pred in predictions:
-            pred.setdefault('is_new_class', 0)
-            pred.setdefault('outlier_score', 0.0)
+            pred.setdefault("is_new_class", 0)
+            pred.setdefault("outlier_score", 0.0)
 
         # 统计信息
         high_conf_count = sum(
-            1 for p in predictions
-            if p.get('aircraft_confidence', 0) >= 0.95
-            and p.get('airline_confidence', 0) >= 0.95
-            and p.get('is_new_class', 0) == 0
+            1
+            for p in predictions
+            if p.get("aircraft_confidence", 0) >= 0.95
+            and p.get("airline_confidence", 0) >= 0.95
+            and p.get("is_new_class", 0) == 0
         )
 
         stats = {
-            'total': len(predictions),
-            'high_confidence_count': high_conf_count,
-            'new_class_count': len(new_class_indices),
-            'review_required_count': len(predictions) - high_conf_count
+            "total": len(predictions),
+            "high_confidence_count": high_conf_count,
+            "new_class_count": len(new_class_indices),
+            "review_required_count": len(predictions) - high_conf_count,
         }
 
         logger.info(f"Batch prediction complete: {stats}")
 
         return {
-            'predictions': predictions,
-            'new_class_indices': new_class_indices,
-            'statistics': stats
+            "predictions": predictions,
+            "new_class_indices": new_class_indices,
+            "statistics": stats,
         }
 
     def get_config(self) -> Dict[str, Any]:
@@ -234,39 +307,36 @@ class AIPredictor:
         Returns:
             是否启用
         """
-        if service == 'quality':
+        if service == "quality":
             # ImageQualityAssessor 总是启用的
             return True
 
-        service_map = {
-            'ocr': self.ocr,
-            'hdbscan': self.hdbscan
-        }
+        service_map = {"ocr": self.ocr, "hdbscan": self.hdbscan}
 
         service_obj = service_map.get(service)
         if service_obj is None:
             return False
 
-        return getattr(service_obj, 'enabled', False)
+        return getattr(service_obj, "enabled", False)
 
     def unload_models(self):
         """卸载所有模型并释放内存"""
         logger.info("Unloading all AI models...")
 
         # 卸载分类模型
-        if hasattr(self.predictor, 'unload_models'):
+        if hasattr(self.predictor, "unload_models"):
             self.predictor.unload_models()
 
         # 卸载 OCR 相关资源
-        if hasattr(self.ocr, 'cleanup'):
+        if hasattr(self.ocr, "cleanup"):
             self.ocr.cleanup()
 
         # 卸载质量评估器
-        if hasattr(self.quality, 'cleanup'):
+        if hasattr(self.quality, "cleanup"):
             self.quality.cleanup()
 
         # 卸载 HDBSCAN
-        if hasattr(self.hdbscan, 'cleanup'):
+        if hasattr(self.hdbscan, "cleanup"):
             self.hdbscan.cleanup()
 
         self._models_loaded = False

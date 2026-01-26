@@ -31,10 +31,12 @@ class RegistrationOCR:
         Args:
             config: OCR配置
         """
-        # 从环境变量读取 OCR API URL（优先级：环境变量 > 默认值）
-        self.api_url = os.getenv('OCR_API_URL', 'http://localhost:8000/v2/models/ocr/infer')
-        self.enabled = config.get('enabled', True)
-        self.timeout = config.get('timeout', 30)
+        self.lang = config.get("lang", "ch")
+        self.use_angle_cls = config.get("use_angle_cls", True)
+        self.use_gpu = config.get("use_gpu", True)
+        self.enabled = config.get("enabled", True)
+        self.ocr = None
+        self.use_new_api = False  # 是否使用 PaddleOCR 3.x 新 API
 
         if not self.enabled:
             logger.info("OCR is disabled")
@@ -42,74 +44,49 @@ class RegistrationOCR:
 
         logger.info(f"OCR API initialized (url={self.api_url})")
 
-    def _call_ocr_api(self, image_path: str) -> Optional[Dict]:
-        """
-        调用 OCR API
-
-        Args:
-            image_path: 图片文件路径
-
-        Returns:
-            API 响应数据
-        """
+    def _init_ocr(self):
+        """初始化 PaddleOCR"""
+        # 尝试使用 PaddleOCR 3.x 新 API
         try:
-            # 读取图片并转换为 base64 编码
-            with open(image_path, 'rb') as f:
-                image_bytes = f.read()
-                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-            
-            # 构建请求数据，使用 base64 编码的图片
-            payload = {
-                "inputs": [
-                    {
-                        "name": "input",
-                        "shape": [1, 1],
-                        "datatype": "BYTES",
-                        "data": [
-                            json.dumps({
-                                "file": f"data:image/jpeg;base64,{image_base64}",
-                                "visualize": False
-                            })
-                        ]
+            from paddleocr import PaddleOCR
+
+            # 构建初始化参数，过滤掉不支持的参数
+            ocr_init_params = {"use_angle_cls": self.use_angle_cls, "lang": self.lang}
+
+            # 检查是否支持 use_gpu 参数
+            try:
+                import paddle
+
+                if paddle.is_compiled_with_cuda() and self.use_gpu:
+                    ocr_init_params["use_gpu"] = True
+            except:
+                pass
+
+            # 尝试初始化
+            try:
+                self.ocr = PaddleOCR(**ocr_init_params)
+                self.use_new_api = False
+                logger.info(
+                    f"PaddleOCR initialized (lang={self.lang}, params={list(ocr_init_params.keys())})"
+                )
+            except TypeError as e:
+                # 如果参数错误，尝试仅使用基本参数
+                if "use_gpu" in str(e) or "show_log" in str(e):
+                    ocr_init_params = {
+                        "use_angle_cls": self.use_angle_cls,
+                        "lang": self.lang,
                     }
-                ],
-                "outputs": [
-                    {
-                        "name": "output"
-                    }
-                ]
-            }
+                    self.ocr = PaddleOCR(**ocr_init_params)
+                    self.use_new_api = False
+                    logger.info(
+                        f"PaddleOCR initialized with basic params (lang={self.lang})"
+                    )
+                else:
+                    raise
 
-            # 发送请求
-            response = requests.post(
-                self.api_url,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-
-            # 解析响应
-            result = response.json()
-            if not result.get('outputs'):
-                logger.error("No outputs in API response")
-                return None
-
-            # 提取并解析 data 字段
-            data_str = result['outputs'][0]['data'][0]
-            ocr_data = json.loads(data_str)
-
-            return ocr_data
-
-        except FileNotFoundError as e:
-            logger.error(f"Image file not found: {image_path}")
-            return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"OCR API request failed: {e}")
-            return None
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            logger.error(f"Failed to parse OCR API response: {e}")
-            return None
+        except Exception as e:
+            logger.error(f"Failed to initialize PaddleOCR: {e}")
+            self.ocr = None
 
     def recognize(self, image_path: str) -> Dict[str, Any]:
         """
@@ -127,7 +104,7 @@ class RegistrationOCR:
                 "confidence": 0.0,
                 "raw_text": "",
                 "all_matches": [],
-                "yolo_boxes": []
+                "yolo_boxes": [],
             }
 
         try:
@@ -135,23 +112,9 @@ class RegistrationOCR:
             image = Image.open(image_path)
             img_width, img_height = image.size
 
-            # 调用 OCR API
-            ocr_data = self._call_ocr_api(image_path)
-            if not ocr_data:
-                return {
-                    "registration": "",
-                    "confidence": 0.0,
-                    "raw_text": "",
-                    "all_matches": [],
-                    "yolo_boxes": []
-                }
-
-            # 解析 OCR 结果
-            try:
-                pruned_result = ocr_data['result']['ocrResults'][0]['prunedResult']
-                rec_texts = pruned_result.get('rec_texts', [])
-                rec_scores = pruned_result.get('rec_scores', [])
-                rec_boxes = pruned_result.get('rec_boxes', [])
+            # OCR识别
+            # 注意：PaddleOCR 3.x 新版本不支持 cls 参数
+            ocr_results = self.ocr.ocr(img_array)
 
                 if not rec_texts:
                     return {
@@ -169,7 +132,7 @@ class RegistrationOCR:
                     "confidence": 0.0,
                     "raw_text": "",
                     "all_matches": [],
-                    "yolo_boxes": []
+                    "yolo_boxes": [],
                 }
 
             all_texts = []
@@ -186,21 +149,25 @@ class RegistrationOCR:
                 box_width = (xmax - xmin) / img_width
                 box_height = (ymax - ymin) / img_height
 
-                all_texts.append({
-                    "text": text,
-                    "confidence": score,
-                    "box": [x_center, y_center, box_width, box_height]
-                })
+                all_texts.append(
+                    {
+                        "text": text,
+                        "confidence": confidence,
+                        "box": [x_center, y_center, box_width, box_height],
+                    }
+                )
 
-                yolo_boxes.append({
-                    "class_id": 0,
-                    "x_center": round(x_center, 6),
-                    "y_center": round(y_center, 6),
-                    "width": round(box_width, 6),
-                    "height": round(box_height, 6),
-                    "text": text,
-                    "confidence": float(score)
-                })
+                yolo_boxes.append(
+                    {
+                        "class_id": 0,
+                        "x_center": round(x_center, 6),
+                        "y_center": round(y_center, 6),
+                        "width": round(box_width, 6),
+                        "height": round(box_height, 6),
+                        "text": text,
+                        "confidence": float(confidence),
+                    }
+                )
 
             raw_text = " ".join(rec_texts)
             matches = self._filter_registrations(all_texts)
@@ -211,17 +178,25 @@ class RegistrationOCR:
                     "confidence": 0.0,
                     "raw_text": raw_text,
                     "all_matches": [],
-                    "yolo_boxes": yolo_boxes
+                    "yolo_boxes": yolo_boxes,
                 }
 
             best_match = max(matches, key=lambda x: x["confidence"])
+            yolo_box = best_match.get("box")
+
+            registration_area = ""
+            if yolo_box:
+                registration_area = (
+                    f"{yolo_box[0]} {yolo_box[1]} {yolo_box[2]} {yolo_box[3]}"
+                )
 
             return {
                 "registration": best_match["text"],
                 "confidence": float(best_match["confidence"]),
                 "raw_text": raw_text,
                 "all_matches": matches,
-                "yolo_boxes": yolo_boxes
+                "yolo_boxes": yolo_boxes,
+                "registration_area": registration_area,
             }
 
         except Exception as e:
@@ -231,7 +206,7 @@ class RegistrationOCR:
                 "confidence": 0.0,
                 "raw_text": "",
                 "all_matches": [],
-                "yolo_boxes": []
+                "yolo_boxes": [],
             }
 
     def _filter_registrations(self, ocr_results: list) -> list:
@@ -245,17 +220,32 @@ class RegistrationOCR:
             match = REGISTRATION_PATTERN.search(text)
             if match:
                 registration = match.group(0)
-                matches.append({
-                    "text": registration,
-                    "confidence": confidence,
-                    "box": result["box"]
-                })
+                matches.append(
+                    {
+                        "text": registration,
+                        "confidence": confidence,
+                        "box": result["box"],
+                    }
+                )
 
         return matches
 
     def cleanup(self):
         """清理OCR资源，释放内存"""
-        logger.info("OCR API client cleanup (no resources to release)")
+        if self.ocr is not None:
+            del self.ocr
+            self.ocr = None
+            logger.info("PaddleOCR resources cleaned up")
+
+        # 清理 CUDA 缓存（如果使用了 GPU）
+        try:
+            import paddle
+
+            if paddle.is_compiled_with_cuda():
+                paddle.device.cuda.empty_cache()
+                logger.info("Paddle CUDA cache cleared")
+        except Exception:
+            pass
 
     def __del__(self):
         """析构时自动清理"""

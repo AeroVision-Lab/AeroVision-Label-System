@@ -11,6 +11,7 @@ import numpy as np
 HDBSCAN_AVAILABLE = False
 try:
     import hdbscan
+
     HDBSCAN_AVAILABLE = True
 except ImportError:
     logging.warning("hdbscan not found. New class detection will be disabled.")
@@ -29,12 +30,12 @@ class HDBSCANNewClassDetector:
         Args:
             config: HDBSCAN配置
         """
-        self.enabled = config.get('enabled', True) and HDBSCAN_AVAILABLE
-        self.min_cluster_size = config.get('min_cluster_size', 5)
-        self.min_samples = config.get('min_samples', 3)
-        self.metric = config.get('metric', 'euclidean')
-        self.cluster_selection_method = config.get('cluster_selection_method', 'eom')
-        self.prediction_data = config.get('prediction_data', True)
+        self.enabled = config.get("enabled", True) and HDBSCAN_AVAILABLE
+        self.min_cluster_size = config.get("min_cluster_size", 5)
+        self.min_samples = config.get("min_samples", 3)
+        self.metric = config.get("metric", "euclidean")
+        self.cluster_selection_method = config.get("cluster_selection_method", "eom")
+        self.prediction_data = config.get("prediction_data", True)
 
         self._clusterer = None
         self._labels: Optional[np.ndarray] = None
@@ -46,9 +47,7 @@ class HDBSCANNewClassDetector:
             logger.info("HDBSCANNewClassDetector disabled")
 
     def detect_new_classes(
-        self,
-        predictions: List[Dict[str, Any]],
-        embeddings: Optional[np.ndarray] = None
+        self, predictions: List[Dict[str, Any]], embeddings: Optional[np.ndarray] = None
     ) -> List[int]:
         """
         检测新类别
@@ -80,12 +79,14 @@ class HDBSCANNewClassDetector:
 
         logger.info(
             f"Found {len(outlier_indices)} potential new class samples "
-            f"({len(outlier_indices)/len(predictions)*100:.1f}%)"
+            f"({len(outlier_indices) / len(predictions) * 100:.1f}%)"
         )
 
         return outlier_indices.tolist()
 
-    def _extract_confidence_features(self, predictions: List[Dict[str, Any]]) -> np.ndarray:
+    def _extract_confidence_features(
+        self, predictions: List[Dict[str, Any]]
+    ) -> np.ndarray:
         """
         从预测结果中提取置信度特征
 
@@ -97,8 +98,8 @@ class HDBSCANNewClassDetector:
         """
         features = []
         for pred in predictions:
-            aircraft_conf = pred['aircraft']['confidence']
-            airline_conf = pred['airline']['confidence']
+            aircraft_conf = pred.get("aircraft_confidence", 0.0)
+            airline_conf = pred.get("airline_confidence", 0.0)
             # 使用最小置信度作为特征
             features.append([min(aircraft_conf, airline_conf)])
 
@@ -113,7 +114,7 @@ class HDBSCANNewClassDetector:
             min_samples=self.min_samples,
             metric=self.metric,
             cluster_selection_method=self.cluster_selection_method,
-            prediction_data=self.prediction_data
+            prediction_data=self.prediction_data,
         )
 
         self._clusterer.fit(embeddings)
@@ -130,7 +131,9 @@ class HDBSCANNewClassDetector:
         n_clusters = len(set(self._labels)) - (1 if -1 in self._labels else 0)
         n_noise = list(self._labels).count(-1)
 
-        logger.info(f"Clustering complete: {n_clusters} clusters, {n_noise} noise points")
+        logger.info(
+            f"Clustering complete: {n_clusters} clusters, {n_noise} noise points"
+        )
 
     def get_outlier_scores(self) -> np.ndarray:
         """获取异常分数"""
@@ -147,7 +150,7 @@ class HDBSCANNewClassDetector:
                 "n_noise": 0,
                 "noise_ratio": 0.0,
                 "mean_outlier_score": 0.0,
-                "available": False
+                "available": False,
             }
 
         n_clusters = len(set(self._labels)) - (1 if -1 in self._labels else 0)
@@ -160,7 +163,7 @@ class HDBSCANNewClassDetector:
             "n_noise": n_noise,
             "noise_ratio": n_noise / n_total if n_total > 0 else 0.0,
             "mean_outlier_score": float(np.mean(self._outlier_scores)),
-            "available": True
+            "available": True,
         }
 
     def cleanup(self):
