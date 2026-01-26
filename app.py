@@ -168,11 +168,6 @@ def get_images():
     })
 
 
-def send_from_directory(path):
-    """获取图片文件"""
-    pass
-
-
 # ==================== 模型推理相关 API ====================
 
 @app.route('/api/inference/predict', methods=['POST'])

@@ -89,6 +89,8 @@ class AIPredictor:
             包含所有预测结果的字典
         """
         start_time = time.time()
+        filename = Path(image_path).name
+        logger.info(f"Predicting image: {filename}")
 
         # 1. 分类预测（机型和航司）
         classification_result = self.predictor.predict(image_path)
@@ -129,6 +131,11 @@ class AIPredictor:
             'quality_score': quality_result.get('score', 0.0),
             'prediction_time': prediction_time
         }
+
+        logger.info(f"Prediction completed: {filename} | Aircraft: {aircraft_pred['class_name']}({aircraft_pred['confidence']:.3f}) | "
+                    f"Airline: {airline_pred['class_name']}({airline_pred['confidence']:.3f}) | "
+                    f"Registration: {ocr_result['registration']} | Quality: {quality_result.get('score', 0.0):.3f} | "
+                    f"Time: {prediction_time:.2f}s")
 
         return result
 
