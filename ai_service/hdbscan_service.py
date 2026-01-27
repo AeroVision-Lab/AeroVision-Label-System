@@ -97,8 +97,27 @@ class HDBSCANNewClassDetector:
         """
         features = []
         for pred in predictions:
-            aircraft_conf = pred['aircraft']['confidence']
-            airline_conf = pred['airline']['confidence']
+            # 处理错误的预测结果
+            if 'error' in pred:
+                logger.warning(f"Skipping prediction with error: {pred.get('filename')}")
+                # 使用默认值
+                features.append([0.5])
+                continue
+            
+            # 支持两种格式：
+            # 1. 新格式：aircraft_confidence, airline_confidence（扁平结构）
+            # 2. 旧格式：aircraft.confidence, airline.confidence（嵌套结构）
+            if 'aircraft_confidence' in pred:
+                aircraft_conf = pred.get('aircraft_confidence', 0.5)
+                airline_conf = pred.get('airline_confidence', 0.5)
+            elif 'aircraft' in pred and isinstance(pred['aircraft'], dict):
+                aircraft_conf = pred['aircraft'].get('confidence', 0.5)
+                airline_conf = pred['airline'].get('confidence', 0.5)
+            else:
+                logger.warning(f"Cannot extract confidence from prediction: {pred.get('filename')}")
+                features.append([0.5])
+                continue
+            
             # 使用最小置信度作为特征
             features.append([min(aircraft_conf, airline_conf)])
 

@@ -127,18 +127,41 @@ def run_startup_ai_prediction():
 
         logger.info(f"Starting AI prediction for {len(image_paths)} images...")
 
-        # 批量预测
-        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True)
+        # 实时数据库写入回调
+        success_count = 0
+        error_count = 0
+        
+        def save_to_db(index, result):
+            nonlocal success_count, error_count
+            try:
+                resp = db.add_ai_prediction(result)
+                if isinstance(resp, dict) and resp.get('error'):
+                    logger.warning(f"Prediction already exists, skip save: {result.get('filename')}")
+                else:
+                    success_count += 1
+                    logger.info(f"Saved prediction {success_count} to DB: {result.get('filename')}")
+            except Exception as e:
+                error_count += 1
+                logger.error(f"Failed to save prediction to DB: {result.get('filename')}: {e}")
+
+        # 批量预测（使用流式回调）
+        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True, on_prediction_callback=save_to_db)
         logger.info(f"predict_batch returned with {len(batch_result['predictions'])} results")
 
-        # 保存预测结果到数据库
-        success_count = 0
-        for pred in batch_result['predictions']:
-            if 'error' not in pred:
-                db.add_ai_prediction(pred)
-                success_count += 1
+        # 处理新类别检测（需要在所有预测完成后执行）
+        new_class_count = batch_result['statistics'].get('new_class_count', 0)
+        if new_class_count > 0:
+            logger.info(f"Detected {new_class_count} new classes, updating their is_new_class flag")
+            for idx in batch_result['new_class_indices']:
+                if idx < len(batch_result['predictions']):
+                    pred = batch_result['predictions'][idx]
+                    # 更新数据库中的is_new_class标记
+                    try:
+                        db.update_ai_prediction_new_class_flag(pred['filename'], 1, pred.get('outlier_score', 0.0))
+                    except Exception as e:
+                        logger.error(f"Failed to update new_class flag for {pred['filename']}: {e}")
 
-        logger.info(f"Startup AI prediction: {success_count}/{len(image_paths)} succeeded")
+        logger.info(f"Startup AI prediction: {success_count} succeeded, {error_count} failed")
         logger.info(f"Statistics: {batch_result['statistics']}")
 
     except Exception as e:
@@ -201,87 +224,87 @@ def get_images():
     })
 
 
-# ==================== 模型推理相关 API ====================
+# # ==================== 模型推理相关 API ====================
 
-@app.route('/api/inference/predict', methods=['POST'])
-def predict_image():
-    """调用推理服务获取YOLOv8-cls预测结果"""
-    try:
-        data = request.get_json()
-        image_base64 = data.get('image_base64')
-        image_path = data.get('image_path')
+# @app.route('/api/inference/predict', methods=['POST'])
+# def predict_image():
+#     """调用推理服务获取YOLOv8-cls预测结果"""
+#     try:
+#         data = request.get_json()
+#         image_base64 = data.get('image_base64')
+#         image_path = data.get('image_path')
 
-        if not image_base64 and not image_path:
-            return jsonify({'error': '请提供 image_base64 或 image_path'}), 400
+#         if not image_base64 and not image_path:
+#             return jsonify({'error': '请提供 image_base64 或 image_path'}), 400
 
-        # 如果提供了图片路径，读取并转换为base64
-        if image_path:
-            full_path = os.path.join(IMAGES_DIR, image_path)
-            if not os.path.exists(full_path):
-                return jsonify({'error': '图片不存在'}), 404
+#         # 如果提供了图片路径，读取并转换为base64
+#         if image_path:
+#             full_path = os.path.join(IMAGES_DIR, image_path)
+#             if not os.path.exists(full_path):
+#                 return jsonify({'error': '图片不存在'}), 404
 
-            with open(full_path, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
-        else:
-            image_data = image_base64
+#             with open(full_path, 'rb') as f:
+#                 image_data = base64.b64encode(f.read()).decode('utf-8')
+#         else:
+#             image_data = image_base64
 
-        # 调用推理服务
-        try:
-            response = requests.post(
-                f'{INFERENCE_SERVICE_URL}/api/v1/predict',
-                json={'image_base64': image_data},
-                timeout=30
-            )
-            response.raise_for_status()
-            return jsonify(response.json())
-        except requests.RequestException as e:
-            logger.error(f'推理服务调用失败: {str(e)}')
-            return jsonify({'error': f'推理服务调用失败: {str(e)}'}), 503
+#         # 调用推理服务
+#         try:
+#             response = requests.post(
+#                 f'{INFERENCE_SERVICE_URL}/api/v1/predict',
+#                 json={'image_base64': image_data},
+#                 timeout=30
+#             )
+#             response.raise_for_status()
+#             return jsonify(response.json())
+#         except requests.RequestException as e:
+#             logger.error(f'推理服务调用失败: {str(e)}')
+#             return jsonify({'error': f'推理服务调用失败: {str(e)}'}), 503
 
-    except Exception as e:
-        logger.error(f'预测错误: {str(e)}')
-        return jsonify({'error': f'预测错误: {str(e)}'}), 500
+#     except Exception as e:
+#         logger.error(f'预测错误: {str(e)}')
+#         return jsonify({'error': f'预测错误: {str(e)}'}), 500
 
 
-@app.route('/api/inference/ocr', methods=['POST'])
-def ocr_image():
-    """调用推理服务获取PaddleOCR识别结果"""
-    try:
-        data = request.get_json()
-        image_base64 = data.get('image_base64')
-        image_path = data.get('image_path')
-        crop_area = data.get('crop_area')  # [x1, y1, x2, y2]
+# @app.route('/api/inference/ocr', methods=['POST'])
+# def ocr_image():
+#     """调用推理服务获取PaddleOCR识别结果"""
+#     try:
+#         data = request.get_json()
+#         image_base64 = data.get('image_base64')
+#         image_path = data.get('image_path')
+#         crop_area = data.get('crop_area')  # [x1, y1, x2, y2]
 
-        if not image_base64 and not image_path:
-            return jsonify({'error': '请提供 image_base64 或 image_path'}), 400
+#         if not image_base64 and not image_path:
+#             return jsonify({'error': '请提供 image_base64 或 image_path'}), 400
 
-        # 如果提供了图片路径，读取并转换为base64
-        if image_path:
-            full_path = os.path.join(IMAGES_DIR, image_path)
-            if not os.path.exists(full_path):
-                return jsonify({'error': '图片不存在'}), 404
+#         # 如果提供了图片路径，读取并转换为base64
+#         if image_path:
+#             full_path = os.path.join(IMAGES_DIR, image_path)
+#             if not os.path.exists(full_path):
+#                 return jsonify({'error': '图片不存在'}), 404
 
-            with open(full_path, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
-        else:
-            image_data = image_base64
+#             with open(full_path, 'rb') as f:
+#                 image_data = base64.b64encode(f.read()).decode('utf-8')
+#         else:
+#             image_data = image_base64
 
-        # 调用推理服务
-        try:
-            response = requests.post(
-                f'{INFERENCE_SERVICE_URL}/api/v1/ocr',
-                json={'image_base64': image_data},
-                timeout=30
-            )
-            response.raise_for_status()
-            return jsonify(response.json())
-        except requests.RequestException as e:
-            logger.error(f'OCR服务调用失败: {str(e)}')
-            return jsonify({'error': f'OCR服务调用失败: {str(e)}'}), 503
+#         # 调用推理服务
+#         try:
+#             response = requests.post(
+#                 f'{INFERENCE_SERVICE_URL}/api/v1/ocr',
+#                 json={'image_base64': image_data},
+#                 timeout=30
+#             )
+#             response.raise_for_status()
+#             return jsonify(response.json())
+#         except requests.RequestException as e:
+#             logger.error(f'OCR服务调用失败: {str(e)}')
+#             return jsonify({'error': f'OCR服务调用失败: {str(e)}'}), 503
 
-    except Exception as e:
-        logger.error(f'OCR错误: {str(e)}')
-        return jsonify({'error': f'OCR错误: {str(e)}'}), 500
+#     except Exception as e:
+#         logger.error(f'OCR错误: {str(e)}')
+#         return jsonify({'error': f'OCR错误: {str(e)}'}), 500
 
 
 @app.route('/api/images/<filename>', methods=['GET'])
@@ -894,17 +917,28 @@ def run_ai_predict_batch():
                 'count': 0
             })
 
-        # 批量预测
-        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True)
+        # 实时保存回调
+        saved = 0
+        def save_to_db(index, result):
+            nonlocal saved
+            resp = db.add_ai_prediction(result)
+            if not (isinstance(resp, dict) and resp.get('error')):
+                saved += 1
 
-        # 保存所有预测结果到数据库
-        for pred in batch_result['predictions']:
-            if 'error' not in pred:
-                db.add_ai_prediction(pred)
+        # 批量预测（使用流式回调）
+        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True, on_prediction_callback=save_to_db)
+
+        # 预测结束后，更新新类别标记
+        if batch_result.get('new_class_indices'):
+            for idx in batch_result['new_class_indices']:
+                if idx < len(batch_result['predictions']):
+                    pred = batch_result['predictions'][idx]
+                    db.update_ai_prediction_new_class_flag(pred['filename'], 1, pred.get('outlier_score', 0.0))
 
         return jsonify({
             'message': f'AI prediction completed for {len(batch_result["predictions"])} images',
             'total': len(batch_result['predictions']),
+            'saved': saved,
             'statistics': batch_result['statistics']
         })
 
@@ -1140,10 +1174,18 @@ def serve_frontend(path):
     else:
         return send_from_directory(app.static_folder, 'index.html')
 
-if __name__ == '__main__':
-    # 启动时运行 AI 预测
-    run_startup_ai_prediction()
 
+# 在应用启动时运行 AI 预测（全局作用域，gunicorn 会执行）
+logger.info("="*80)
+logger.info("Flask app initialized, starting AI prediction...")
+logger.info("="*80)
+run_startup_ai_prediction()
+logger.info("="*80)
+logger.info("Flask app startup complete")
+logger.info("="*80)
+
+
+if __name__ == '__main__':
     port = int(os.getenv('FLASK_PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug)

@@ -136,8 +136,10 @@ class AIPredictor:
                 'airline_class': airline_pred['class_name'],
                 'airline_confidence': airline_pred['confidence'],
                 'registration': ocr_result['registration'],
+                'registration_confidence': ocr_result.get('confidence', 0.0),
                 'registration_area': registration_area,
                 'quality_score': quality_result.get('score', 0.0),
+                'quality_confidence': quality_result.get('score', 0.0),
                 'prediction_time': prediction_time
             }
 
@@ -161,7 +163,8 @@ class AIPredictor:
     def predict_batch(
         self,
         image_paths: List[str],
-        detect_new_classes: bool = True
+        detect_new_classes: bool = True,
+        on_prediction_callback = None
     ) -> Dict[str, Any]:
         """
         批量预测
@@ -169,6 +172,7 @@ class AIPredictor:
         Args:
             image_paths: 图片路径列表
             detect_new_classes: 是否检测新类别
+            on_prediction_callback: 预测完成回调，接收(index, result)参数，可用于实时保存到数据库
 
         Returns:
             包含所有预测结果和新类别检测结果的字典
@@ -191,6 +195,14 @@ class AIPredictor:
                 logger.info(f"Processing image {i+1}/{len(image_paths)}: {image_path}")
                 result = self.predict_single(image_path)
                 predictions.append(result)
+                
+                # 实时回调（用于流式保存到数据库）
+                if on_prediction_callback and 'error' not in result:
+                    try:
+                        on_prediction_callback(i, result)
+                    except Exception as e:
+                        logger.error(f"Error in prediction callback for {result.get('filename')}: {e}")
+                
                 if (i + 1) % 10 == 0:
                     logger.info(f"Processed {i + 1}/{len(image_paths)} images")
             except Exception as e:
