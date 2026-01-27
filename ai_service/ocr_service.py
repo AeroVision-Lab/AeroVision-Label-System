@@ -89,17 +89,79 @@ class RegistrationOCR:
             )
             response.raise_for_status()
 
-            # 解析响应
+            # 解析响应（兼容 BYTES 嵌套 JSON 与多重转义）
             result = response.json()
             if not result.get('outputs'):
                 logger.error("No outputs in API response")
                 return None
 
-            # 提取并解析 data 字段
-            data_str = result['outputs'][0]['data'][0]
-            ocr_data = json.loads(data_str)
+            outputs = result.get('outputs', [])
+            # 优先按名称找到名为 output 的输出
+            output_obj = None
+            for out in outputs:
+                if out.get('name') == 'output':
+                    output_obj = out
+                    break
+            if output_obj is None and outputs:
+                output_obj = outputs[0]
 
-            return ocr_data
+            data_list = output_obj.get('data') or []
+            if not data_list:
+                logger.error("Empty 'data' in OCR API response output")
+                return None
+
+            raw_val = data_list[0]
+
+            def _to_text(val: Any) -> Optional[str]:
+                if val is None:
+                    return None
+                if isinstance(val, bytes):
+                    try:
+                        return val.decode('utf-8', errors='replace')
+                    except Exception:
+                        return None
+                if isinstance(val, str):
+                    return val
+                # Triton 有时会返回 {"b64": "..."}
+                if isinstance(val, dict):
+                    b64 = val.get('b64') or val.get('base64')
+                    if b64:
+                        try:
+                            decoded = base64.b64decode(b64)
+                            return decoded.decode('utf-8', errors='replace')
+                        except Exception as e:
+                            logger.error(f"Failed to base64-decode OCR output: {e}")
+                            return None
+                return None
+
+            text = _to_text(raw_val)
+            if text is None:
+                logger.error("Unsupported OCR output value type; cannot convert to text")
+                return None
+
+            # 有些后端会把 JSON 再次转义，需要尝试多次反序列化
+            parsed: Any = text
+            for _ in range(2):
+                try:
+                    parsed = json.loads(parsed)
+                except Exception:
+                    break
+                # 如果仍是字符串且看起来像 JSON，则再解一层
+                if isinstance(parsed, str) and (parsed.strip().startswith('{') or parsed.strip().startswith('[')):
+                    continue
+                else:
+                    break
+
+            if isinstance(parsed, str):
+                # 最终还是字符串且不是 JSON，无法解析
+                logger.error("OCR output is not valid JSON after unescaping")
+                return None
+
+            if not isinstance(parsed, dict):
+                logger.error("OCR output JSON is not an object")
+                return None
+
+            return parsed
 
         except FileNotFoundError as e:
             logger.error(f"Image file not found: {image_path}")
@@ -152,6 +214,16 @@ class RegistrationOCR:
                 rec_texts = pruned_result.get('rec_texts', [])
                 rec_scores = pruned_result.get('rec_scores', [])
                 rec_boxes = pruned_result.get('rec_boxes', [])
+                # 如果没有提供矩形框，尝试从多边形转换
+                if (not rec_boxes) and pruned_result.get('rec_polys'):
+                    rec_boxes = []
+                    for poly in pruned_result['rec_polys']:
+                        # poly: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                        xs = [p[0] for p in poly]
+                        ys = [p[1] for p in poly]
+                        xmin, xmax = min(xs), max(xs)
+                        ymin, ymax = min(ys), max(ys)
+                        rec_boxes.append([xmin, ymin, xmax, ymax])
 
                 if not rec_texts:
                     return {

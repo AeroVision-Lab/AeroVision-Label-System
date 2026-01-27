@@ -127,18 +127,41 @@ def run_startup_ai_prediction():
 
         logger.info(f"Starting AI prediction for {len(image_paths)} images...")
 
-        # 批量预测
-        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True)
+        # 实时数据库写入回调
+        success_count = 0
+        error_count = 0
+        
+        def save_to_db(index, result):
+            nonlocal success_count, error_count
+            try:
+                resp = db.add_ai_prediction(result)
+                if isinstance(resp, dict) and resp.get('error'):
+                    logger.warning(f"Prediction already exists, skip save: {result.get('filename')}")
+                else:
+                    success_count += 1
+                    logger.info(f"Saved prediction {success_count} to DB: {result.get('filename')}")
+            except Exception as e:
+                error_count += 1
+                logger.error(f"Failed to save prediction to DB: {result.get('filename')}: {e}")
+
+        # 批量预测（使用流式回调）
+        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True, on_prediction_callback=save_to_db)
         logger.info(f"predict_batch returned with {len(batch_result['predictions'])} results")
 
-        # 保存预测结果到数据库
-        success_count = 0
-        for pred in batch_result['predictions']:
-            if 'error' not in pred:
-                db.add_ai_prediction(pred)
-                success_count += 1
+        # 处理新类别检测（需要在所有预测完成后执行）
+        new_class_count = batch_result['statistics'].get('new_class_count', 0)
+        if new_class_count > 0:
+            logger.info(f"Detected {new_class_count} new classes, updating their is_new_class flag")
+            for idx in batch_result['new_class_indices']:
+                if idx < len(batch_result['predictions']):
+                    pred = batch_result['predictions'][idx]
+                    # 更新数据库中的is_new_class标记
+                    try:
+                        db.update_ai_prediction_new_class_flag(pred['filename'], 1, pred.get('outlier_score', 0.0))
+                    except Exception as e:
+                        logger.error(f"Failed to update new_class flag for {pred['filename']}: {e}")
 
-        logger.info(f"Startup AI prediction: {success_count}/{len(image_paths)} succeeded")
+        logger.info(f"Startup AI prediction: {success_count} succeeded, {error_count} failed")
         logger.info(f"Statistics: {batch_result['statistics']}")
 
     except Exception as e:
@@ -894,17 +917,28 @@ def run_ai_predict_batch():
                 'count': 0
             })
 
-        # 批量预测
-        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True)
+        # 实时保存回调
+        saved = 0
+        def save_to_db(index, result):
+            nonlocal saved
+            resp = db.add_ai_prediction(result)
+            if not (isinstance(resp, dict) and resp.get('error')):
+                saved += 1
 
-        # 保存所有预测结果到数据库
-        for pred in batch_result['predictions']:
-            if 'error' not in pred:
-                db.add_ai_prediction(pred)
+        # 批量预测（使用流式回调）
+        batch_result = ai_predictor.predict_batch(image_paths, detect_new_classes=True, on_prediction_callback=save_to_db)
+
+        # 预测结束后，更新新类别标记
+        if batch_result.get('new_class_indices'):
+            for idx in batch_result['new_class_indices']:
+                if idx < len(batch_result['predictions']):
+                    pred = batch_result['predictions'][idx]
+                    db.update_ai_prediction_new_class_flag(pred['filename'], 1, pred.get('outlier_score', 0.0))
 
         return jsonify({
             'message': f'AI prediction completed for {len(batch_result["predictions"])} images',
             'total': len(batch_result['predictions']),
+            'saved': saved,
             'statistics': batch_result['statistics']
         })
 

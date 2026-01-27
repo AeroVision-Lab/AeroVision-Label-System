@@ -758,6 +758,19 @@ class Database:
         conn.close()
         return affected > 0
 
+    def update_ai_prediction_new_class_flag(self, filename: str, is_new_class: int, outlier_score: float = 0.0) -> bool:
+        """更新AI预测的新类别标记和异常分数"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE ai_predictions SET is_new_class = ?, outlier_score = ? WHERE filename = ?',
+            (is_new_class, outlier_score, filename)
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected > 0
+
     def update_label_with_ai_data(self, label_id: int, ai_data: dict) -> bool:
         """更新标注记录的AI相关字段"""
         conn = self.get_connection()
