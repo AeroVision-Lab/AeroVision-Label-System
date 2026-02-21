@@ -62,6 +62,43 @@ except Exception as e:
     ai_predictor = None
     ai_enabled = False
 
+# 初始化训练管理器（需要指定Aerovision-V1路径）
+AERO_V1_PATH = os.getenv('AERO_V1_PATH', './AeroVision-V1')
+TEMP_DIR = os.getenv('TEMP_DIR', './temp_training')
+MODELS_DIR = os.getenv('MODELS_DIR', './models')
+
+try:
+    from training_manager import TrainingManager
+    from scheduler import TrainingScheduler
+
+    training_manager = TrainingManager(
+        db=db,
+        aero_v1_path=AERO_V1_PATH,
+        labeled_dir=LABELED_DIR,
+        temp_dir=TEMP_DIR,
+        models_dir=MODELS_DIR
+    )
+
+    # 启动训练管理器
+    training_manager.start()
+
+    # 初始化并启动调度器
+    scheduler = TrainingScheduler(
+        training_manager=training_manager,
+        db=db,
+        schedule_hour=int(os.getenv('TRAINING_SCHEDULE_HOUR', '2'))
+    )
+    scheduler.start()
+
+    training_enabled = True
+    logger.info("Training manager and scheduler initialized")
+except Exception as e:
+    logger.warning(f"Failed to initialize training manager: {e}")
+    logger.warning(traceback.format_exc())
+    training_manager = None
+    scheduler = None
+    training_enabled = False
+
 # 支持的图片格式
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
 
@@ -1162,6 +1199,188 @@ def get_ai_stats():
     """获取AI复审统计信息"""
     stats = db.get_review_stats()
     return jsonify(stats)
+
+# ==================== 训练相关 API ====================
+
+@app.route('/api/training/status', methods=['GET'])
+def get_training_status():
+    """获取训练系统状态"""
+    if not training_enabled:
+        return jsonify({
+            'enabled': False,
+            'message': 'Training not enabled'
+        })
+
+    try:
+        # 获取队列状态
+        queue_status = training_manager.get_queue_status()
+
+        # 获取当前运行的任务
+        running_job = db.get_running_training_job()
+
+        # 获取调度器状态
+        scheduler_status = scheduler.get_status()
+
+        # 获取资源状态
+        resources_ok, resource_info = training_manager.check_resources()
+
+        return jsonify({
+            'enabled': True,
+            'queue': queue_status,
+            'running_job': running_job,
+            'scheduler': scheduler_status,
+            'resources': {
+                'ok': resources_ok,
+                'info': resource_info
+            }
+        })
+    except Exception as e:
+        logger.error(f"Failed to get training status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/training/jobs', methods=['GET'])
+def get_training_jobs():
+    """获取训练任务列表"""
+    if not training_enabled:
+        return jsonify({'error': 'Training not enabled'}), 503
+
+    status = request.args.get('status')
+    limit = request.args.get('limit', type=int)
+
+    try:
+        jobs = db.get_training_jobs(status=status, limit=limit)
+        return jsonify({
+            'total': len(jobs),
+            'items': jobs
+        })
+    except Exception as e:
+        logger.error(f"Failed to get training jobs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/training/jobs/<int:job_id>', methods=['GET'])
+def get_training_job(job_id: int):
+    """获取单个训练任务详情"""
+    if not training_enabled:
+        return jsonify({'error': 'Training not enabled'}), 503
+
+    try:
+        job = db.get_training_job(job_id)
+        if not job:
+            return jsonify({'error': 'Training job not found'}), 404
+
+        # 获取评估结果
+        result = db.get_training_result(job_id)
+
+        # 获取模型版本
+        versions = db.get_model_versions(training_job_id=job_id)
+
+        return jsonify({
+            'job': job,
+            'result': result,
+            'model_versions': versions
+        })
+    except Exception as e:
+        logger.error(f"Failed to get training job {job_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/training/trigger', methods=['POST'])
+def trigger_training():
+    """手动触发训练"""
+    if not training_enabled:
+        return jsonify({'error': 'Training not enabled'}), 503
+
+    data = request.get_json()
+    task_type = data.get('task_type', 'aircraft')
+
+    if task_type not in ['aircraft', 'airline']:
+        return jsonify({'error': 'Invalid task_type, must be aircraft or airline'}), 400
+
+    try:
+        result = training_manager.trigger_training(task_type=task_type, triggered_by='manual')
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Failed to trigger training: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/training/jobs/<int:job_id>/cancel', methods=['POST'])
+def cancel_training_job(job_id: int):
+    """取消训练任务"""
+    if not training_enabled:
+        return jsonify({'error': 'Training not enabled'}), 503
+
+    try:
+        job = db.get_training_job(job_id)
+        if not job:
+            return jsonify({'error': 'Training job not found'}), 404
+
+        if job['status'] not in ['pending', 'queued']:
+            return jsonify({'error': 'Cannot cancel job in current status'}), 400
+
+        db.update_training_job_status(job_id, 'cancelled', error_message='Cancelled by user')
+
+        return jsonify({'message': 'Training job cancelled'})
+    except Exception as e:
+        logger.error(f"Failed to cancel training job {job_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/training/models', methods=['GET'])
+def get_model_versions():
+    """获取模型版本列表"""
+    if not training_enabled:
+        return jsonify({'error': 'Training not enabled'}), 503
+
+    model_type = request.args.get('type')
+    active_only = request.args.get('active_only', 'false').lower() == 'true'
+
+    try:
+        versions = db.get_model_versions(model_type=model_type, active_only=active_only)
+        return jsonify({
+            'total': len(versions),
+            'items': versions
+        })
+    except Exception as e:
+        logger.error(f"Failed to get model versions: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/training/models/<int:version_id>/activate', methods=['POST'])
+def activate_model_version(version_id: int):
+    """激活指定模型版本"""
+    if not training_enabled:
+        return jsonify({'error': 'Training not enabled'}), 503
+
+    try:
+        success = db.set_active_model(version_id)
+        if not success:
+            return jsonify({'error': 'Model version not found'}), 404
+
+        return jsonify({'message': 'Model version activated'})
+    except Exception as e:
+        logger.error(f"Failed to activate model version {version_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/training/results/<int:job_id>', methods=['GET'])
+def get_training_result(job_id: int):
+    """获取训练结果"""
+    if not training_enabled:
+        return jsonify({'error': 'Training not enabled'}), 503
+
+    try:
+        result = db.get_training_result(job_id)
+        if not result:
+            return jsonify({'error': 'Training result not found'}), 404
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Failed to get training result {job_id}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # ==================== 前端静态资源服务 ====================
 

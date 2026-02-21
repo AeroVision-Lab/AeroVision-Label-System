@@ -24,3 +24,10 @@ ultralytics>=8.0.0
 # 聚类算法
 hdbscan>=0.8.0
 scikit-learn>=1.3.0
+
+# AeroVision Inference (AI模型推理库)
+aerovision-inference>=1.0.0
+
+# 训练相关
+GPUtil>=1.4.0
+psutil>=5.9.0

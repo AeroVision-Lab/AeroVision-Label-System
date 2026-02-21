@@ -167,7 +167,7 @@ class AIPredictor:
         on_prediction_callback = None
     ) -> Dict[str, Any]:
         """
-        批量预测
+        批量预测（懒加载模型）
 
         Args:
             image_paths: 图片路径列表
@@ -177,15 +177,16 @@ class AIPredictor:
         Returns:
             包含所有预测结果和新类别检测结果的字典
         """
-        logger.info(f"predict_batch called with {len(image_paths)} images, models_loaded={self._models_loaded}")
-        
-        if not self._models_loaded:
-            logger.info("Models not loaded, loading now...")
-            try:
-                self.load_models()
-            except Exception as e:
-                logger.error(f"Failed to load models: {e}")
-                raise
+        logger.info(f"predict_batch called with {len(image_paths)} images")
+
+        # 移除提前加载模型的逻辑，让模型在 predict_single 中懒加载
+        # if not self._models_loaded:
+        #     logger.info("Models not loaded, loading now...")
+        #     try:
+        #         self.load_models()
+        #     except Exception as e:
+        #         logger.error(f"Failed to load models: {e}")
+        #         raise
 
         logger.info(f"Predicting batch of {len(image_paths)} images...")
 
@@ -195,14 +196,14 @@ class AIPredictor:
                 logger.info(f"Processing image {i+1}/{len(image_paths)}: {image_path}")
                 result = self.predict_single(image_path)
                 predictions.append(result)
-                
+
                 # 实时回调（用于流式保存到数据库）
                 if on_prediction_callback and 'error' not in result:
                     try:
                         on_prediction_callback(i, result)
                     except Exception as e:
                         logger.error(f"Error in prediction callback for {result.get('filename')}: {e}")
-                
+
                 if (i + 1) % 10 == 0:
                     logger.info(f"Processed {i + 1}/{len(image_paths)} images")
             except Exception as e:
@@ -220,7 +221,9 @@ class AIPredictor:
         # 新类别检测
         new_class_indices = []
         if detect_new_classes:
-            new_class_indices = self.hdbscan.detect_new_classes(predictions)
+            # 获取embeddings用于HDBSCAN聚类
+            embeddings = self.predictor.get_embeddings(image_paths)
+            new_class_indices = self.hdbscan.detect_new_classes(predictions, embeddings=embeddings)
 
         # 标记新类别
         for i, idx in enumerate(new_class_indices):

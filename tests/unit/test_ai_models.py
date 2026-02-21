@@ -6,6 +6,7 @@ AI模型单元测试
 import pytest
 import sys
 import os
+import numpy as np
 from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 
@@ -274,6 +275,46 @@ class TestHDBSCANService:
         assert hdbscan.enabled is True
 
     @patch("ai_service.hdbscan_service.hdbscan.HDBSCAN")
+    def test_detect_new_classes_with_embeddings(self, mock_hdbscan_class):
+        """测试HDBSCAN使用embeddings而非置信度特征"""
+        # 模拟HDBSCAN实例
+        mock_hdbscan_instance = MagicMock()
+        mock_hdbscan_instance.labels_ = np.array([0, 0, 1, 1, -1, -1])
+        mock_hdbscan_instance.outlier_scores_ = np.array([0.5, 0.6, 0.3, 0.4, 0.8, 0.9])
+        mock_hdbscan_class.return_value = mock_hdbscan_instance
+
+        config = {"enabled": True, "min_cluster_size": 2, "min_samples": 1}
+        hdbscan = HDBSCANNewClassDetector(config)
+
+        # 创建模拟预测结果
+        mock_predictions = [
+            {"filename": f"test{i}.jpg", "aircraft_confidence": 0.9, "airline_confidence": 0.85}
+            for i in range(6)
+        ]
+
+        # 创建模拟embeddings（6个样本，每个10维）
+        mock_embeddings = np.random.rand(6, 10)
+
+        # 调用detect_new_classes并提供embeddings
+        new_class_indices = hdbscan.detect_new_classes(
+            mock_predictions, embeddings=mock_embeddings
+        )
+
+        # 验证：应该使用提供的embeddings
+        # 检查HDBSCAN的fit方法被调用，并且使用的是embeddings
+        mock_hdbscan_instance.fit.assert_called_once()
+        called_embeddings = mock_hdbscan_instance.fit.call_args[0][0]
+
+        # 关键断言：fit方法接收的应该是embeddings，而不是置信度特征
+        assert np.array_equal(called_embeddings, mock_embeddings)
+        assert called_embeddings.shape == (6, 10)  # 6个样本，10维特征
+
+        # 验证返回的新类别索引
+        assert isinstance(new_class_indices, list)
+        assert 4 in new_class_indices  # label=-1的样本
+        assert 5 in new_class_indices  # label=-1的样本
+
+    @patch("ai_service.hdbscan_service.hdbscan.HDBSCAN")
     @pytest.mark.skip(reason="HDBSCAN mock complexity")
     def test_detect_new_classes(self, mock_hdbscan_class):
         """测试检测新类别"""
@@ -346,6 +387,154 @@ class TestHDBSCANService:
         # 噪声点（label=-1）应该被标记为新类别
         assert 4 in new_class_indices
         assert 5 in new_class_indices
+
+
+class TestModelPredictorEmbeddings:
+    """ModelPredictor的embeddings功能测试"""
+
+    @patch("ai_service.predictor.YOLO")
+    def test_get_embeddings_returns_numpy_array(self, mock_yolo, sample_config):
+        """测试get_embeddings方法返回numpy数组"""
+        # 模拟YOLO实例
+        mock_model = MagicMock()
+        mock_yolo.return_value = mock_model
+
+        # 模拟embed()方法的返回值 - YOLO的embed()返回一个list
+        # 每个元素是一个embedding向量（tensor或numpy array）
+        mock_embedding = MagicMock()
+        mock_embedding.cpu.return_value.numpy.return_value = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        # embed()返回list
+        mock_model.embed.return_value = [mock_embedding]
+
+        with patch.object(Path, "exists", return_value=True):
+            predictor = ModelPredictor(sample_config["models"])
+            predictor._aircraft_model = mock_model
+
+            import tempfile
+            fd, test_image = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+
+            try:
+                embeddings = predictor.get_embeddings([test_image])
+
+                # 验证返回的是numpy数组
+                assert isinstance(embeddings, np.ndarray)
+                # 验证shape是 (n_samples, embedding_dim)
+                assert embeddings.shape[0] == 1
+                assert embeddings.shape[1] == 5
+            finally:
+                os.unlink(test_image)
+
+    @patch("ai_service.predictor.YOLO")
+    def test_get_embeddings_calls_model_embed(self, mock_yolo, sample_config):
+        """测试get_embeddings正确调用了模型的embed方法"""
+        mock_model = MagicMock()
+        mock_yolo.return_value = mock_model
+
+        # 模拟embed()返回值
+        mock_embedding1 = MagicMock()
+        mock_embedding1.cpu.return_value.numpy.return_value = np.array([0.1, 0.2, 0.3])
+        mock_embedding2 = MagicMock()
+        mock_embedding2.cpu.return_value.numpy.return_value = np.array([0.4, 0.5, 0.6])
+        mock_model.embed.return_value = [mock_embedding1, mock_embedding2]
+
+        with patch.object(Path, "exists", return_value=True):
+            predictor = ModelPredictor(sample_config["models"])
+            predictor._aircraft_model = mock_model
+
+            import tempfile
+            fd, test_image1 = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            fd, test_image2 = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+
+            try:
+                embeddings = predictor.get_embeddings([test_image1, test_image2])
+
+                # 验证embed方法被调用
+                mock_model.embed.assert_called_once()
+                # 验证返回的embeddings shape
+                assert embeddings.shape == (2, 3)
+            finally:
+                os.unlink(test_image1)
+                os.unlink(test_image2)
+
+    @patch("ai_service.predictor.YOLO")
+    def test_get_embeddings_handles_empty_list(self, mock_yolo, sample_config):
+        """测试get_embeddings处理空列表"""
+        mock_model = MagicMock()
+        mock_yolo.return_value = mock_model
+
+        with patch.object(Path, "exists", return_value=True):
+            predictor = ModelPredictor(sample_config["models"])
+            predictor._aircraft_model = mock_model
+
+            embeddings = predictor.get_embeddings([])
+
+            # 空列表应该返回空数组
+            assert isinstance(embeddings, np.ndarray)
+            assert embeddings.shape == (0,)
+
+
+class TestAIPredictorWithEmbeddings:
+    """AIPredictor使用embeddings的集成测试"""
+
+    @patch("ai_service.ai_predictor.AIPredictor.predict_single")
+    @patch("ai_service.predictor.ModelPredictor.get_embeddings")
+    def test_predict_batch_uses_embeddings_for_hdbscan(self, mock_get_embeddings, mock_predict_single, temp_config_file):
+        """测试predict_batch使用embeddings而非置信度特征进行HDBSCAN聚类"""
+        # 模拟predict_single返回值
+        mock_predict_single.side_effect = [
+            {
+                "filename": f"test{i}.jpg",
+                "aircraft_class": "A320",
+                "aircraft_confidence": 0.9 + i * 0.01,
+                "airline_class": "CCA",
+                "airline_confidence": 0.85 + i * 0.01,
+                "registration": f"B-{1000+i}",
+                "registration_area": "0.5 0.5 0.2 0.1",
+                "quality_score": 0.8,
+                "quality_confidence": 0.8,
+                "prediction_time": 0.5,
+            }
+            for i in range(6)
+        ]
+
+        # 模拟get_embeddings返回值 - YOLO embed向量
+        mock_embeddings = np.random.rand(6, 128)  # 假设128维embedding
+        mock_get_embeddings.return_value = mock_embeddings
+
+        predictor = AIPredictor(temp_config_file)
+        predictor._models_loaded = True  # 跳过模型加载
+
+        # 创建测试图片路径
+        import tempfile
+        test_images = []
+        for i in range(6):
+            fd, path = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            test_images.append(path)
+
+        try:
+            # 调用predict_batch，启用新类别检测
+            result = predictor.predict_batch(test_images, detect_new_classes=True)
+
+            # 验证：get_embeddings应该被调用
+            mock_get_embeddings.assert_called_once()
+            called_images = mock_get_embeddings.call_args[0][0]
+            assert len(called_images) == 6
+
+            # 验证：HDBSCAN应该使用embeddings而不是置信度
+            # 我们通过检查hdbscan被调用时的参数来验证
+            # 由于HDBSCAN的mock难以直接验证，我们检查结果结构
+            assert "predictions" in result
+            assert "new_class_indices" in result
+            assert len(result["predictions"]) == 6
+
+        finally:
+            for path in test_images:
+                if os.path.exists(path):
+                    os.unlink(path)
 
 
 class TestAIPredictor:

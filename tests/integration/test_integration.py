@@ -413,7 +413,7 @@ class TestAIIntegration:
                 assert result["processed"] == 1
 
     def test_push_order_priority(self, client):
-        """测试推送顺序：新类别优先，然后按置信度升序"""
+        """测试推送顺序：新类别优先，然后是样本量<8的类别（按样本量升序），最后是样本量>=8的类别（按置信度升序）"""
         test_client, test_db = client
         response = test_client.get("/api/ai/review/pending")
 
@@ -425,23 +425,39 @@ class TestAIIntegration:
             items = data["items"]
 
             if len(items) > 1:
-                # 验证新类别在前面
+                # 分组：新类别、样本量<8的类别、样本量>=8的类别
                 new_class_indices = [
                     i for i, item in enumerate(items) if item["is_new_class"] == 1
                 ]
+                low_sample_indices = [
+                    i
+                    for i, item in enumerate(items)
+                    if item["is_new_class"] == 0 and (item.get("sample_count") or 0) < 8
+                ]
                 regular_indices = [
-                    i for i, item in enumerate(items) if item["is_new_class"] == 0
+                    i
+                    for i, item in enumerate(items)
+                    if item["is_new_class"] == 0
+                    and (item.get("sample_count") or 0) >= 8
                 ]
 
-                # 如果有新类别，应该都在常规类别之前
-                if new_class_indices and regular_indices:
+                # 验证新类别在样本量<8的类别之前
+                if new_class_indices and low_sample_indices:
                     max_new_class_index = max(new_class_indices)
-                    min_regular_index = min(regular_indices)
-                    assert max_new_class_index < min_regular_index, (
-                        "New classes should come before regular classes"
+                    min_low_sample_index = min(low_sample_indices)
+                    assert max_new_class_index < min_low_sample_index, (
+                        "New classes should come before low-sample classes"
                     )
 
-                # 验证常规类别按置信度升序
+                # 验证样本量<8的类别在样本量>=8的类别之前
+                if low_sample_indices and regular_indices:
+                    max_low_sample_index = max(low_sample_indices)
+                    min_regular_index = min(regular_indices)
+                    assert max_low_sample_index < min_regular_index, (
+                        "Low-sample classes should come before regular classes"
+                    )
+
+                # 验证样本量>=8的类别按置信度升序（置信度越低越优先）
                 for i in range(len(regular_indices) - 1):
                     idx1 = regular_indices[i]
                     idx2 = regular_indices[i + 1]
@@ -454,7 +470,15 @@ class TestAIIntegration:
                         items[idx2]["airline_confidence"],
                     )
                     assert conf1 <= conf2, (
-                        f"Confidence should be ascending, but {conf1} > {conf2}"
+                        f"Confidence should be ascending for regular classes, but {conf1} > {conf2}"
+                    )
+
+                # 验证样本量<8的类别在其他类别之前
+                if low_sample_indices and regular_indices:
+                    max_low_sample_index = max(low_sample_indices)
+                    min_regular_index = min(regular_indices)
+                    assert max_low_sample_index < min_regular_index, (
+                        "Low-sample classes should come before regular classes"
                     )
 
 
